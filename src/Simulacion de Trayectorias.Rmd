@@ -1,0 +1,731 @@
+---
+title: "Simulacion Ornstein Uhlenbeck"
+author: "Diego"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+# Librerias
+library(dplyr)
+# Para las graficas y los colores
+library(ggplot2)
+library(paletteer)
+if (!requireNamespace("ggsci", quietly = TRUE)) install.packages("ggsci")
+library(ggsci)
+library(ggdark)
+library(patchwork)
+# Paletas
+paleta_1 <- "ggsci::default_nejm"
+```
+
+Un proceso de ornstein_uhlenbeck esta definido por la siguiente Ecuacion Diferencial Estocastica (EDE)
+
+$$
+dX_t \,=\, \alpha (\mu - X_t) dt \,+\, \sigma dW_t
+$$
+donde \(W_t\) es un movimiento browniano estandar, tambien llamado proceso de Wiener (de ahi la notacion \(W_t\))
+
+A un proceso estocastico como este se le llama *"de reversion a la media"* y es, de hecho, **una cadena de Markov continua** homogenea en el tiempo; esto significa que su probabilidad de transicion depende unicamente del tiempo transcurrido y no del punto en el tiempo del que parta, es decir:
+
+$$
+\mathbb{P}[\,X_{t+s} \,|\, X_t\,] = \mathbb{P}[\,X_{s} \,|\, X_0\,]
+$$
+
+-   Su parametro \( \mu \) se le conoce como parametro de reversion a la media. Esto significa que *(a largo plazo se diria en el contexto de finanzas)* conforme t crezca o mas precisamente conforme \( t \rightarrow \inf\) , el proceso tendera a estabilizarse al rededor de \( \mu \)
+
+-   Su parametro \( \alpha \) se le conoce como velocidad de reversion a la media. Entre mas grande sea, mas rapido sera la convergencia del proceso entorno a \( \mu \)
+
+-   Su parametro \( \sigma \) es un parametro relacionado con dispersion del proceso. Observacion: No es igual a la desviacion estandar del mismo, aunque si esta asociado a esta. 
+
+Es posible llegar a una expresion de la solucion exacta de un proceso de Ornstein - Uhlenbeck y conocer la distribucion exacta del proceso solucion \( {X_t} \) en cada punto del tiempo \( t \in \mathbb{R}^+\), y esta es:
+
+$$
+X_t \, \sim \, N(\mu_t,\sigma_t^2)
+$$
+
+con \( \mu_t =\mu \,+\, (X_0 - \mu)e^{-\alpha t} \)  y  \( \sigma_t = \sigma \, \frac{1 - e^{-2 \alpha t}}{2 \alpha}  \)
+
+Entonces, podemos expresarlo asi:
+
+$$
+X_t \, = \, \mu_t + \sigma_t \, Z_t
+$$
+
+## Modelo de Vasicek
+
+Es importante hacer una aclaracion historica antes de seguir avanzando. El modelo de Ornstein - Uhlenbeck fue desarrollado en 1930 por Leonard Ornstein y George Uhlenbeck. Con el tiempo se ha descubierto que se puede aplicar en una gran variedad de campos por lo general que es el comportamiento que describe la Ecuacion Diferencial Estocastica que lo define. Esta variedad de aplicaciones, tambien proviene de que dentro de las muy distintas formas en las que se puede plantear una Ecuacion Diferencial Estocastica, esta es relativamente sencilla de resolver y de encontrar una expresion cerrada para su solucion exacta.
+
+Una de estas aplicaciones la realizo Oldrich Vasicek en 1977 en el campo de las finanzas. Concretamente, en la modelacion de la dinamica de tasas y curvas de interes a corto plazo. En finanzas, a este modelo que matematicamente es el mismo que el de Ornstein - Uhlenbeck, se le conoce como **Modelo de Vasicek** y en este:
+
+-   el parametro \( \mu \) se escribe como \( r^{(equilibrio)} \) o \( r_e \), y representa la tasa *(de interes)* a la cual el proceso tendera a estabilizarse a largo plazo en el modelo
+
+-   los otros dos parametros si mantienen la notacion
+
+# Simulacion de m Trayectorias
+
+Computacionalmente es imposible simular una trayectoria a tiempo t, para todo t en \(\mathbb{R}^+\) *(pues son infinitos y solo podemos hacer operaciones finitas con una computadora)*. Toda simulacion de trayectorias de algun proceso estocastico involucra una discretizacion en el tiempo, esto lo controlaremos de la siguiente forma:
+
+-   Especificamos un punto en el tiempo \(t_f\) hasta el cual hayamos decidido simular la trayectoria. 
+
+-   Determinamos que los pasos entre \(t_0\) y \(t_f\) seran equidistantes y definiremos el tamaño de cada paso como \(dt = t_{i+1} - t_{i}\) *(que es igual para todo i)*
+
+-   Asi, al introducir como argumento \(dt\), tenemos un vector con los puntos en el tiempo \( (t_0,t_1,t_2,...,t_n) \) en los que simularemos los puntos de las trayectorias. Obs que \( t_0 = 0 \) y \( t_n = t_f \)
+
+## Simulacion Monte Carlo
+
+La simulacion de las trayectorias hace uso de la Simulacion Monte Carlo, pero vale la pena hacer unas observaciones para que no hayan confusiones tras esta seccion. 
+
+En la Simulacion Monte Carlo usual, buscamos realizar n simulaciones de alguna distribucion de probabilidad, obteniendo una muestra de tamaño n de la variable aleatoria que nos interesaba analizar *(y que tenia dicha distribucion)*. Queremos puntualizar esto ultimo: la muestra que obtenemos es una muestra iid (independiente e identicamente distribuida) de esa distribucion,  es decir cada elemento de la muestra \(\in \mathbb{R}\).
+
+En contraste, lo que esta obteniendo nuestro algoritmo es una muestra de tamaño m independiente e identicamente distribuida de **trayectorias** del proceso estocastico completo hasta tiempo \(t_f\) en los tiempos \( t_0,t_1,t_2,...,t_n \). La simulacion Monte Carlo *(en el sentido unidimensional usual)* esta corriendo sobre cada uno de los n pasos de las m trayectorias.
+
+### La discretizacion del proceso
+
+Habiendo esclarecido eso, no esta de mas escribir la expresion de la discretizacion de un proceso de Ornstein - Uhlenbeck que estamos usando para simular las trayectorias:
+
+$$
+X_{t+\Delta t} \, = \, \mu_{t+\Delta t} + \sigma_{t+\Delta t} \, Z_{t+\Delta t}
+$$
+
+donde son iid todas las \(Z\): \( Z \sim N(0,1) \) ,
+
+$$
+\mu_{t+\Delta t} \, = \, \mu + (X_t - \mu)\,e^{-\theta \,\Delta t} 
+$$
+
+$$
+\sigma_{t+\Delta t} \, = \, \sigma \, \sqrt{\frac{1-e^{-2\theta \, \Delta t}}{2 \theta}} 
+$$
+
+donde recordemos que por la equidistancia de los tiempos: \( \Delta t \, = \, t_{i+1} \, - \, t_i \), por lo que podemos reescribir esas expresiones hacia atras para llegar a la forma que esta en el codigo:
+
+$$
+X_{t} \, = \, \mu_{t} + \sigma_{t} \, Z_{t}
+$$
+
+con:
+
+$$
+\mu_{t} \, = \, \mu + (X_{t-1} - \mu)\,e^{-\theta \,\Delta t} 
+$$
+
+$$
+\sigma_{t} \, = \, \sigma \, \sqrt{\frac{1-e^{-2\theta \, \Delta t}}{2 \theta}} 
+$$
+
+#### ¿Porque?
+
+Desde una perspectiva teorica, esta forma de discretizar iterativa, proviene de la propiedad ya mencionada \( \mathbb{P}[\,X_{t+s} \,|\, X_t\,] = \mathbb{P}[\,X_{s} \,|\, X_0\,] \) de este proceso estocastico en particular.
+
+Esa propiedad permite que la discretizacion se pueda entender del siguiente modo: Supongamos que solo queremos simular 1 paso de las m trayectorias. Entonces, es claro que esta seria la discretizacion del proceso en 2 tiempos discretos: \((t_0, t_f) \, = \, (0,t_1)\), pues incluso esta discretizacion luciria funcionalmente como la expresion del proceso a tiempo continuo. 
+
+¿Que ocurriria para el segundo paso? Por la propiedad de homogeneidad en el tiempo de esta cadena de markov, podriamos simular el segundo paso, utilizando el paso que ya simulamos. Y es claro que ahora, el termino \(X_0\) ya no seria la condicion inicial pues ahora estamos iniciando en \(X_1\) de acuerdo a esa idea. Y observese que estamos simulando el paso 2. 
+
+Esta reflexion, podemos culminarlas mediante induccion simple sobre n (iterativamente en el codigo), que es el numoer de pasos y lo que estariamos diciendo en dicho paso es que para simular \(X_n\) hay que repetir el proceso pero tomando \(X_{n-1}\) como condicion inicial. Observese que lo demas en la expresion no afecta este argumento ya que todos los \(\Delta t\) son iguales *(por la equidistancia de los tiempos)*
+
+Nuestra implementacion de las trayectorias funciona llenando una matriz de nxm, en la que cada columna es una trayectoria y cada renglon es uno de los n pasos *(o puntos)* que la conforman. El llenado es por renglones, es decir, en cada iteracion llenamos el i-esimo paso de todas las trayectorias para aprovechar la estructura vectorial de R
+
+```{r ornstein - uhlenbeck, echo = TRUE}
+# (mu, alpha, sigma) :  Son los parametros del modelo
+#                 X0 :  Es simplemente la condicion inicial de la trayectoria en tiempo t0 = 0
+#                 tf :  Controla hasta que punto en el tiempo se van a simular las trayectorias
+#                  m :  Es el numero de trayectorias que simularemos simultaneamente
+
+ornstein_uhlenbeck <- function( mu, alpha, sigma, X0, tf, dt, m) {
+  
+  tiempos <- seq(0, tf, by = dt)        # Discretización del tiempo entre 0 y t_f
+  n <- length(tiempos)                  # Queda definido n : el numero de pasos
+  # Matriz para almacenar las trayectorias, n pasos x m trayectorias
+  trayectorias <- matrix(0, nrow = n, ncol = m)
+  trayectorias[1, ] <- X0               # A tiempo 0, todas inician en la condicion inicial X_0
+  
+  for (i in 2:n) {
+    # Para no sobrecargar la notacion calculamos primero la media y la desviacion estandar del paso
+    mu_t <- mu + (trayectorias[i-1, ] - mu) * exp(- alpha * dt)
+    sigma_t <- sigma * sqrt((1 - exp(-2 * alpha * dt)) / (2 * alpha))
+    # Con ellas, hacemos una simulacion montecarlo para el i-esimo paso de todas las trayectorias
+    trayectorias[i, ] <- mu_t + sigma_t * rnorm(m, 0, 1)
+  }
+  return(list(tiempos = tiempos, trayectorias = trayectorias))
+}
+```
+
+Planteemos un ejemplo para visualizar la simulacion de las trayectorias:
+
+-   \(t_f = 10\)
+
+-   \(m = 6\)
+
+-   \(dt = 1\)
+
+-   \(r_0 = 0.08\)
+
+-   \( \theta \, = \, (\mu, \alpha, \sigma) \, = \, (0.20,0.30,0.15)\) 
+
+Observese que si t se mide en dias, estamos realizando 6 simulaciones a 10 dias, simulando 1 paso por dia
+
+```{r trayectorias R base, fig.align='left', fig.width=6, fig.height=3.75}
+set.seed(48)
+tf = 10                         # Si t se mide en dias, esto seria simular 2 semanas y media
+m = 8                           # 6 trayectorias
+dt = 1                          # Si t se mide en dias, esto seria cada dia un paso
+r0 = 0.12                       # Las trayectorias iniciaran en 0.08
+r_eq = 0.2                      
+alpha = 0.3
+sigma = 0.08
+
+simulacion <- ornstein_uhlenbeck(mu = r_eq,alpha,sigma,r0,tf,dt,m)
+
+# Grafica rudimentaria con R base
+plot(simulacion$tiempo, simulacion$trayectorias[, 1], type = "l", col = "blue", 
+     ylim = range(simulacion$trayectorias),
+     xlab = "Tiempo", ylab = "Tasa", main = "Simulación del modelo de Ornstein Uhlenbeck")
+for (i in 2:m) {
+  lines(simulacion$tiempo, simulacion$trayectorias[, i], col = "blue")
+}
+```
+
+## Ahora con GGplot2
+
+Ggplot2 nos exige que los datos a graficar vengan en un data frame en donde cada columna represente una y solo una variable a graficar en las diferentes aesthetics disponibles. La opcion mas natural es crear un df con una columna de tiempos (eje x), una columna con los valores de las trayectorias en cada tiempo (eje y) y una mas que identifique de que trayectoria es cada punto (colores).
+
+Una forma de lograrlo es crear ese formato de datos largos con mutate y pivot_longer *del tidyr* o algo similar, pero se tarda demasiado por que esta haciendo varias operaciones innecesarias en el proceso.
+
+Otro modo mucho mas rapido y sin operaciones innecesarias es usando lapply con una funcion que cree un data frame para cada trayectoria. El lapply me devuelve una lista de estos data frames. Al final, el do.call le aplica a todos los elementos de la lista *(con el argumento "." )* la funcion rbind para "pegar por renglones" , asi pega un data frame debajo del otro debajo del otro y eso ya termina siendo un data frame justo como lo necesitamos.
+
+
+Vamos a realizar 4 graficas sobre el mismo ejemplo con la misma semilla y mismo \( \theta \) para comparar
+
+-   La primer grafica es la misma que la que generamos antes con R base
+
+-   La segunda grafica es en lugar de simular 10 dias, simula 18.5 *(2 semanas y media)* y lo hace simulando 2 pasos por dia, es decir, \(dt = \frac{1}{2} \)
+
+-   La tercera es como la segunda pero con \(t_f = 30\) *(1 mes)* simulando 4 pasos por dia
+
+-   La cuarta es como la tercera grafica pero hasta \(t_f = 45\) *(1 mes y medio)* , simulando **un paso cada hora y media**, es decir \(dt = \frac{1}{16} \) y en lugar de simular 8 trayectorias, simulamos 16.
+
+En todas las graficas hay 2 lineas de referencia: una en y = \( r^{eq} \) y otra en y = 0
+
+```{r}
+set.seed(48)
+tf = 10                         # Si t se mide en dias, esto seria simular 1 semana y media
+m = 8                           
+dt = 1                          # Si t se mide en dias, esto seria cada dia: un paso
+r0 = 0.12                       
+r_eq = 0.2                      
+alpha = 0.3
+sigma = 0.08
+
+simulacion <- ornstein_uhlenbeck(mu = r_eq,alpha,sigma,r0,tf,dt,m)
+
+datos_largos <- lapply(1:m, function(i) {
+                              data.frame(
+                                    Trayectoria = i,
+                                    Tiempo = simulacion$tiempo,
+                                    Tasa = simulacion$trayectorias[, i]   )
+                }) %>% do.call(rbind, . )
+
+# Ahora si a graficar (:
+g1 <- ggplot( datos_largos, aes(x = Tiempo, y = Tasa, color = factor(Trayectoria) )  ) +
+      geom_line(linewidth = 0.5) +
+      geom_hline(yintercept = 0, linetype = "dotdash", color = "#3B3B3B", size = 0.5) +
+      geom_hline(yintercept = r_eq, linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.25) +
+      scale_color_viridis_d(option = "inferno")  +  ylim(c(-0.20,0.65)) +
+      labs(  # title = "Simulación del modelo de Vasicek",
+          x = "Tiempo", y = "Tasa", color = "Trayectoria"   ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = "bottom"  )         
+```
+
+```{r}
+set.seed(48)
+tf = 18.5                        # Si t se mide en dias, esto seria simular 2 semanas y media
+m = 8                           
+dt = 1/2                         # Si t se mide en dias, esto seria cada dia: 2 pasos
+r0 = 0.12                       
+r_eq = 0.2                      
+alpha = 0.3
+sigma = 0.08
+
+simulacion <- ornstein_uhlenbeck(mu = r_eq,alpha,sigma,r0,tf,dt,m)
+
+datos_largos <- lapply(1:m, function(i) {
+                              data.frame(
+                                    Trayectoria = i,
+                                    Tiempo = simulacion$tiempo,
+                                    Tasa = simulacion$trayectorias[, i]   )
+                }) %>% do.call(rbind, . )
+
+# Ahora si a graficar (:
+g2 <- ggplot( datos_largos, aes(x = Tiempo, y = Tasa, color = factor(Trayectoria) )  ) +
+      geom_line(linewidth = 0.5) +
+      geom_hline(yintercept = 0, linetype = "dotdash", color = "#3B3B3B", size = 0.5) +
+      geom_hline(yintercept = r_eq, linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.25) +
+      scale_color_viridis_d(option = "inferno")  +  ylim(c(-0.20,0.65)) +
+      labs(  # title = "Simulación del modelo de Vasicek",
+          x = "Tiempo", y = "Tasa", color = "Trayectoria"   ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = "bottom"  )         
+```
+
+```{r}
+set.seed(48)
+tf = 30                          # Si t se mide en dias, esto seria simular 1 mes
+m = 8                           
+dt = 1/4                         # Si t se mide en dias, esto seria cada dia : 4 pasos
+r0 = 0.12                       
+r_eq = 0.2                      
+alpha = 0.3
+sigma = 0.08
+
+simulacion <- ornstein_uhlenbeck(mu = r_eq,alpha,sigma,r0,tf,dt,m)
+
+datos_largos <- lapply(1:m, function(i) {
+                              data.frame(
+                                    Trayectoria = i,
+                                    Tiempo = simulacion$tiempo,
+                                    Tasa = simulacion$trayectorias[, i]   )
+                }) %>% do.call(rbind, . )
+
+# Ahora si a graficar (:
+g3 <- ggplot( datos_largos, aes(x = Tiempo, y = Tasa, color = factor(Trayectoria) )  ) +
+      geom_line(linewidth = 0.5, alpha = 1) +
+      geom_hline(yintercept = 0, linetype = "dotdash", color = "#3B3B3B", size = 0.5) +
+      geom_hline(yintercept = r_eq, linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.25) +
+      scale_color_viridis_d(option = "inferno")  +  ylim(c(-0.20,0.65)) +
+      ylim(c(-0.20,0.65)) +
+      labs(  # title = "Simulación del modelo de Vasicek",
+          x = "Tiempo", y = "Tasa", color = "Trayectoria"   ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = "bottom"  )         
+```
+
+```{r}
+set.seed(48)
+tf = 45                           # Si t se mide en dias, esto seria simular 1 mes
+m = 16                           
+dt = 1/16                         # Si t se mide en dias, esto seria cada dia : 4 pasos
+r0 = 0.12                       
+r_eq = 0.2                      
+alpha = 0.3
+sigma = 0.08
+
+simulacion <- ornstein_uhlenbeck(mu = r_eq,alpha,sigma,r0,tf,dt,m)
+
+datos_largos <- lapply(1:m, function(i) {
+                              data.frame(
+                                    Trayectoria = i,
+                                    Tiempo = simulacion$tiempo,
+                                    Tasa = simulacion$trayectorias[, i]   )
+                }) %>% do.call(rbind, . )
+
+# Ahora si a graficar (:
+g4 <- ggplot( datos_largos, aes(x = Tiempo, y = Tasa, color = factor(Trayectoria) )  ) +
+      geom_line(linewidth = 0.5) +
+      geom_hline(yintercept = 0, linetype = "dotdash", color = "#3B3B3B", size = 0.5) +
+      geom_hline(yintercept = r_eq, linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.25) +
+      scale_color_viridis_d(option = "inferno")  +  ylim(c(-0.20,0.65)) +
+      labs(  # title = "Simulación del modelo de Vasicek",
+          x = "Tiempo", y = "Tasa", color = "Trayectoria"   ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = "bottom"  )         
+```
+
+```{r trayectorias ornstein uhlenbeck, fig.height=10, fig.width=12.5, echo=FALSE, fig.align='center'}
+# Diseño personalizado de mi combinacion de graficas
+design <- "
+  12
+  34  "
+
+g1 + g2 + g3 + g4 + 
+  plot_layout(design = design) + 
+  plot_annotation(
+      theme = theme(
+          plot.title = element_text(size = 18, hjust = 0.5, color = "white", face = "bold"),
+          plot.subtitle = element_text(size = 14, hjust = 0.5, color = "white"),
+          plot.background = element_rect(fill = "black", color = NA),
+          plot.caption = element_text(color = "white")
+      ), 
+      title = "Simulaciones del Modelo de Ornstein Uhlenbeck",
+      subtitle = "Desde la fórmula cerrada de la solución",
+      caption = "se uso la semilla 48"
+  ) & 
+  theme(text = element_text(family = "serif"))
+# Otra buena opcion es family = "mono"
+```
+
+O alternativamente si estamos interesados en un analisis muy a corto plazo, podemos ver como se incrementa el nivel de detalle para un horizonte temporal mucho mas corto y esta vez fijo de 7 dias. De nuevo, con la misma semilla y mismo \( \theta \)
+
+
+-   La primer grafica simula 8 trayectorias a 7 dias, con 2 pasos por dia, es decir cada medio dia avanza un paso
+
+-   La segunda grafica es en lugar de simular un paso cada medio dia, simular uno cada 6 horas, es decir \(dt = \frac{1}{4} \)
+
+-   La tercera es como la segunda pero simulando un paso **cada media hora**, es decir \(dt = \frac{1}{48} \) 
+
+-   La cuarta es como la tercera grafica pero en lugar de 8 trayectorias, simulamos 16 y **dan un paso cada 15 minutos**, es decir \(dt = \frac{1}{48} \)
+
+
+```{r}
+set.seed(48)
+tf = 7                          # Si t se mide en dias, esto seria simular 1 semana
+m = 8                           
+dt = 1/2                        # Si t se mide en dias, esto seria un paso cada 12 horas
+r0 = 0.12                       
+r_eq = 0.2                      
+alpha = 0.3
+sigma = 0.08
+
+simulacion <- ornstein_uhlenbeck(mu = r_eq,alpha,sigma,r0,tf,dt,m)
+
+datos_largos <- lapply(1:m, function(i) {
+                              data.frame(
+                                    Trayectoria = i,
+                                    Tiempo = simulacion$tiempo,
+                                    Tasa = simulacion$trayectorias[, i]   )
+                }) %>% do.call(rbind, . )
+
+# Ahora si a graficar (:
+g5 <- ggplot( datos_largos, aes(x = Tiempo, y = Tasa, color = factor(Trayectoria) )  ) +
+      geom_line(linewidth = 0.5) +
+      geom_hline(yintercept = 0, linetype = "dotdash", color = "#3B3B3B", size = 0.5) +
+      geom_hline(yintercept = r_eq, linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.25) +
+      scale_color_viridis_d(option = "inferno")  +  ylim(c(-0.20,0.65)) +
+      labs(  # title = "Simulación del modelo de Vasicek",
+          x = "Tiempo", y = "Tasa", color = "Trayectoria"   ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = "bottom"  )         
+```
+
+```{r}
+set.seed(21)
+tf = 7                         
+m = 8                           
+dt = 1/4                        # Si t se mide en dias, esto seria un paso cada 6 horas
+r0 = 0.12                       
+r_eq = 0.2                      
+alpha = 0.3
+sigma = 0.08
+
+simulacion <- ornstein_uhlenbeck(mu = r_eq,alpha,sigma,r0,tf,dt,m)
+
+datos_largos <- lapply(1:m, function(i) {
+                              data.frame(
+                                    Trayectoria = i,
+                                    Tiempo = simulacion$tiempo,
+                                    Tasa = simulacion$trayectorias[, i]   )
+                }) %>% do.call(rbind, . )
+
+# Ahora si a graficar (:
+g6 <- ggplot( datos_largos, aes(x = Tiempo, y = Tasa, color = factor(Trayectoria) )  ) +
+      geom_line(linewidth = 0.5) +
+      geom_hline(yintercept = 0, linetype = "dotdash", color = "#3B3B3B", size = 0.5) +
+      geom_hline(yintercept = r_eq, linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.25) +
+      scale_color_viridis_d(option = "inferno")  +  ylim(c(-0.20,0.65)) +
+      labs(  # title = "Simulación del modelo de Vasicek",
+          x = "Tiempo", y = "Tasa", color = "Trayectoria"   ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = "bottom"  )         
+```
+
+```{r}
+set.seed(21)
+tf = 7                           
+m = 8                           
+dt = 1/48                        # Si t se mide en dias, esto seria un paso cada 30 minutos
+r0 = 0.12                       
+r_eq = 0.2                      
+alpha = 0.3
+sigma = 0.08
+
+simulacion <- ornstein_uhlenbeck(mu = r_eq,alpha,sigma,r0,tf,dt,m)
+
+datos_largos <- lapply(1:m, function(i) {
+                              data.frame(
+                                    Trayectoria = i,
+                                    Tiempo = simulacion$tiempo,
+                                    Tasa = simulacion$trayectorias[, i]   )
+                }) %>% do.call(rbind, . )
+
+# Ahora si a graficar (:
+g7 <- ggplot( datos_largos, aes(x = Tiempo, y = Tasa, color = factor(Trayectoria) )  ) +
+      geom_line(linewidth = 0.5) +
+      geom_hline(yintercept = 0, linetype = "dotdash", color = "#3B3B3B", size = 0.5) +
+      geom_hline(yintercept = r_eq, linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.25) +
+      scale_color_viridis_d(option = "inferno")  +  ylim(c(-0.20,0.65)) +
+      labs(  # title = "Simulación del modelo de Vasicek",
+          x = "Tiempo", y = "Tasa", color = "Trayectoria"   ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = "bottom"  )         
+```
+
+
+```{r}
+set.seed(21)
+tf = 7                           
+m = 16                           
+dt = 1/96                        # Si t se mide en dias, esto seria un paso cada 15 minutos
+r0 = 0.12                       
+r_eq = 0.2                      
+alpha = 0.3
+sigma = 0.08
+
+simulacion <- ornstein_uhlenbeck(mu = r_eq,alpha,sigma,r0,tf,dt,m)
+
+datos_largos <- lapply(1:m, function(i) {
+                              data.frame(
+                                    Trayectoria = i,
+                                    Tiempo = simulacion$tiempo,
+                                    Tasa = simulacion$trayectorias[, i]   )
+                }) %>% do.call(rbind, . )
+
+# Ahora si a graficar (:
+g8 <- ggplot( datos_largos, aes(x = Tiempo, y = Tasa, color = factor(Trayectoria) )  ) +
+      geom_line(linewidth = 0.5) +
+      geom_hline(yintercept = 0, linetype = "dotdash", color = "#3B3B3B", size = 0.5) +
+      geom_hline(yintercept = r_eq, linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.25) +
+      scale_color_viridis_d(option = "inferno")  +  ylim(c(-0.20,0.65)) +
+      labs(  # title = "Simulación del modelo de Vasicek",
+          x = "Tiempo", y = "Tasa", color = "Trayectoria"   ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = "bottom"  )         
+```
+
+```{r mas trayectorias ornstein uhlenbeck, fig.height=10, fig.width=12.5, echo=FALSE, fig.align='center'}
+# Diseño personalizado de mi combinacion de graficas
+design <- "
+  12
+  34  "
+
+g5 + g6 + g7 + g8 + 
+  plot_layout(design = design) + 
+  plot_annotation(
+      theme = theme(
+          plot.title = element_text(size = 18, hjust = 0.5, color = "white", face = "bold"),
+          plot.subtitle = element_text(size = 14, hjust = 0.5, color = "white"),
+          plot.background = element_rect(fill = "black", color = NA),
+          plot.caption = element_text(color = "white")
+      ), 
+      title = "Simulaciones del Modelo de Ornstein Uhlenbeck",
+      subtitle = "Desde la fórmula cerrada de la solución",
+      caption = "se uso la semilla 21"
+  ) & 
+  theme(text = element_text(family = "serif"))
+# Otra buena opcion es family = "mono"
+```
+
+## Formas alternativas de implementarlo
+
+Aunque proseguiremos el desarrollo de este proyecto usando la implementacion ya mostrada para simular trayectorias, presentamos dos metodos alternativos de hacerlo que son menos precisos ya que no parten de la solucion exacta de la EDE que define al proceso, sino de la expresion como tal de la EDE sin resolver.
+
+Estos son el metodo de Euler - Maruyama y el metodo de Milstein. En general, su importancia radica en que si la EDE que define al proceso estocastico que queremos simular, fuese demasiado complicada de resolver o bien ni si quiera fuese posible encontrar una expresion cerrada de su solucion exacta, estos metodos nos dan una manera de simular una aproximacion del proceso que es la solucion exacta y desconocida de la EDE, lo cual ocurre con frecuencia.
+
+*Lease el documento adjunto sobre los Metodos Euler - Maruyama y Milstein para simular aproximaciones de la solucion de una EDE*
+
+En el caso especifico del modelo de Vasicek, el metodo de Milstein resulta el mismo que el de Euler - Maruyama ya que el termino que mejora la aproximacion involucra a \(\frac{\partial g(X_t)}{\partial X_t}\), es decir, la derivada del termino de difusion del proceso con respecto al proceso mismo y como en el modelo de Vasicek, el termion de difussion es la constante \(\sigma\), esa derivada es 0. Sin embargo en otros modelos como el de CIR (Cox-Ingersoll-Ross), este termino es muy relevante para mejorar la precision de las trayectorias. Y ya que no se puede llegar a una forma cerrada de su solucion exacta, este es el mejor camino para poder simular trayectorias y, de hecho, en la practica se usa el modelo a traves de realizar muchas simulaciones y hacer inferencia sobre lo que se busque analizar en ellas
+
+A continuacion mostramos las trayectorias con la misma semilla, parametros, horizonte temporal y tamaño de paso de la primer grafica, solo que ahora simuladas desde el metodo de euler - maruyama con el fin de poder comparar ambos metodos
+
+```{r, euler - maruyama}
+# En esta forma de implementarlo aprovechamos la estructura vectorial de R para usar un solo for.
+# En cada iteracion, actualizamos el j-esimo paso de todas las trayectorias a la vez.
+
+# m :       Numero de trayectorias
+# T :       Tiempo final de las trayectorias
+# dt:       Longitud de cada paso
+# r_eq:     Tasa de equilibrio
+# r0:       Tasa inicial
+# alpha:    "Velocidad"
+# sigma:    Volatilidad
+
+euler_maruyama <- function(m, tf, dt, r0, alpha, mu, sigma){
+  # Número de pasos en el tiempo
+  N <- tf / dt  
+  # tiempos de la particion
+  t <- seq(0, tf, by = dt)  
+  # Aqui guardaremos las trayectorias. Cada renglon es una trayectoria. Las columnas son los pasos
+  tray <- matrix(0, nrow = m, ncol = length(t))
+  # Inicializamos en r0 todas las trayectorias
+  tray[,1] <- r0
+  
+  # Aqui viene la simulacion MonteCarlo para nuestras trayectorias. Se llena por columnas = pasos
+  for (paso in 2:(N+1)) {
+      # Calculamos vectorialmente r_{n-1} y la deriva para cada trayectoria en el tiempo t_i
+      r_ant <- tray[,paso - 1]
+      deriva <- alpha * (mu - r_ant)
+      # simulamos las Delta(Wt) para cada trayectoria, para el componente estocastico de la EDE
+      dW <- rnorm(m,0,sqrt(dt))
+      # Calculamos la trayectoria en el paso actual
+      r_t <- r_ant + deriva * dt + sigma * dW
+      # Guardamos la trayectoria
+      tray[,paso] <- r_t
+  }
+  return( list(tiempo = t, trayectorias = tray) )
+}
+```
+
+```{r}
+set.seed(48)
+tf = 10
+m = 8
+dt = 1
+r0 = 0.12
+r_eq = 0.2
+alpha = 0.3
+sigma = 0.08
+
+simulacion <- euler_maruyama(m, tf, dt, r0, alpha, r_eq, sigma)
+
+# Pasamos las trayectorias que ya tenemos, a un formato largo
+datos_largos <- lapply(1:m, function(i) {
+                              data.frame(
+                                    Trayectoria = i,
+                                    Tiempo = simulacion$tiempo,
+                                    Tasa = simulacion$trayectorias[ i,]   )
+}) %>% do.call(rbind, . )
+
+# Ahora si a graficar (:
+g9 <- ggplot( datos_largos, aes(x = Tiempo, y = Tasa, color = factor(Trayectoria) )  ) +
+      geom_line(linewidth = 0.5) +
+      geom_hline(yintercept = 0, linetype = "dotdash", color = "#3B3B3B", size = 0.5) +
+      geom_hline(yintercept = r_eq, linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.15) +
+      scale_color_viridis_d(option = "magma")  +  ylim(c(-0.20,0.65)) +
+      labs(  # title = "Simulación del modelo de Vasicek",
+          x = "Tiempo", y = "Tasa", color = "Trayectoria"   ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = "bottom"  )         
+```
+
+```{r}
+set.seed(48)
+tf = 18.5
+m = 8
+dt = 1/2
+r0 = 0.12
+r_eq = 0.2
+alpha = 0.3
+sigma = 0.08
+
+simulacion <- euler_maruyama(m, tf, dt, r0, alpha, r_eq, sigma)
+
+# Pasamos las trayectorias que ya tenemos, a un formato largo
+datos_largos <- lapply(1:m, function(i) {
+                              data.frame(
+                                    Trayectoria = i,
+                                    Tiempo = simulacion$tiempo,
+                                    Tasa = simulacion$trayectorias[ i,]   )
+}) %>% do.call(rbind, . )
+
+# Ahora si a graficar (:
+g10 <- ggplot( datos_largos, aes(x = Tiempo, y = Tasa, color = factor(Trayectoria) )  ) +
+      geom_line(linewidth = 0.5) +
+      geom_hline(yintercept = 0, linetype = "dotdash", color = "#3B3B3B", size = 0.5) +
+      geom_hline(yintercept = r_eq, linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.15) +
+      scale_color_viridis_d(option = "magma")  +  ylim(c(-0.20,0.65)) +
+      labs(  # title = "Simulación del modelo de Vasicek",
+          x = "Tiempo", y = "Tasa", color = "Trayectoria"   ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = "bottom"  )         
+```
+
+```{r}
+set.seed(48)
+tf = 30
+m = 8
+dt = 1/4
+r0 = 0.12
+r_eq = 0.2
+alpha = 0.3
+sigma = 0.08
+
+simulacion <- euler_maruyama(m, tf, dt, r0, alpha, r_eq, sigma)
+
+# Pasamos las trayectorias que ya tenemos, a un formato largo
+datos_largos <- lapply(1:m, function(i) {
+                              data.frame(
+                                    Trayectoria = i,
+                                    Tiempo = simulacion$tiempo,
+                                    Tasa = simulacion$trayectorias[ i,]   )
+}) %>% do.call(rbind, . )
+
+# Ahora si a graficar (:
+g11 <- ggplot( datos_largos, aes(x = Tiempo, y = Tasa, color = factor(Trayectoria) )  ) +
+      geom_line(linewidth = 0.5) +
+      geom_hline(yintercept = 0, linetype = "dotdash", color = "#3B3B3B", size = 0.5) +
+      geom_hline(yintercept = r_eq, linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.15) +
+      scale_color_viridis_d(option = "magma")  +  ylim(c(-0.20,0.65)) +
+      labs(  # title = "Simulación del modelo de Vasicek",
+          x = "Tiempo", y = "Tasa", color = "Trayectoria"   ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = "bottom"  )         
+```
+
+```{r}
+set.seed(48)
+tf = 45
+m = 16
+dt = 1/16
+r0 = 0.12
+r_eq = 0.2
+alpha = 0.3
+sigma = 0.08
+
+simulacion <- euler_maruyama(m, tf, dt, r0, alpha, r_eq, sigma)
+
+# Pasamos las trayectorias que ya tenemos, a un formato largo
+datos_largos <- lapply(1:m, function(i) {
+                              data.frame(
+                                    Trayectoria = i,
+                                    Tiempo = simulacion$tiempo,
+                                    Tasa = simulacion$trayectorias[ i,]   )
+}) %>% do.call(rbind, . )
+
+# Ahora si a graficar (:
+g12 <- ggplot( datos_largos, aes(x = Tiempo, y = Tasa, color = factor(Trayectoria) )  ) +
+      geom_line(linewidth = 0.5) +
+      geom_hline(yintercept = 0, linetype = "dotdash", color = "#3B3B3B", size = 0.5) +
+      geom_hline(yintercept = r_eq, linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.15) +
+      scale_color_viridis_d(option = "magma")  +  ylim(c(-0.20,0.65)) +
+      labs(  # title = "Simulación del modelo de Vasicek",
+          x = "Tiempo", y = "Tasa", color = "Trayectoria"   ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = "bottom"  )         
+```
+
+```{r trayectorias Euler Maruyama, fig.height=10, fig.width=12.5, echo=FALSE, fig.align='center'}
+# Diseño personalizado de mi combinacion de graficas
+design <- "
+  12
+  34  "
+
+g9 + g10 + g11 + g12 + 
+  plot_layout(design = design) + 
+  plot_annotation(
+      theme = theme(
+          plot.title = element_text(size = 18, hjust = 0.5, color = "white", face = "bold"),
+          plot.subtitle = element_text(size = 14, hjust = 0.5, color = "white"),
+          plot.background = element_rect(fill = "black", color = NA),
+          plot.caption = element_text(color = "white")
+      ), 
+      title = "Simulaciones del Modelo de Ornstein Uhlenbeck",
+      subtitle = "Mediante el metodo de Euler - Maruyama",
+      caption = "se uso la semilla 48"
+  ) & 
+  theme(text = element_text(family = "serif"))
+# Otra buena opcion es family = "mono"
+```
+

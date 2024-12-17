@@ -1,0 +1,263 @@
+---
+title: "Intervalos de confianza y otras estadisticas"
+author: "mediante Simulacion Monte Carlo"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+# Librerias
+library(dplyr)
+library(knitr)
+# Para las graficas y los colores
+library(ggplot2)
+library(paletteer)
+if (!requireNamespace("ggsci", quietly = TRUE)) install.packages("ggsci")
+library(ggsci)
+library(ggdark)
+library(patchwork)
+```
+
+Al trabajar con datos reales, ya no conoceremos los valores verdaderos de \(\theta\) bajo el modelo. Por ello nos detuvimos tanto en la parte de estimacion de parametros, para asegurar que habiamos llegado a un algoritmo de Simulated Annealing confiable 
+
+El esquema con el que vamos a abordar el problema sera:
+
+  1.     Importar el conjunto de datos con el que trabajaremos en el modelo de Vasicek
+
+  2.     Estimar los parametros
+  
+  3.     Simular m trayectorias del modelo *(con los parametros estimados)*
+  
+  4.     Comparar visualmente con la trayectoria real observada de los datos, buscando alguna señal de que el ajuste no fue bueno.
+  
+  5.     Hacer inferencia sobre la muestra de trayectorias simuladas para predecir el comportamiento futuro de los datos asi como para valuar bonos u otros activos financieros que dependan de tasas de interes
+
+## Intervalos de Confianza y otras estadisticas mediante Simulacion Monte Carlo
+
+Cuando tengamos m trayectorias, las siguientes son un conjunto de estadisticas estandar que seria util conocer: 
+
+-   Intervalo de confianza a un nivel de significancia \(s\)
+
+-   Intervalo de confianza a un nivel de significancia \(2s\)
+
+-   Intervalo de confianza a un nivel de significancia \(3s\)
+
+-   Media o Mediana
+
+
+```{r}
+# Funciones de archivos anteriores necesarios para esta seccion
+ornstein_uhlenbeck <- function( mu, alpha, sigma, X0, tf, dt, m) {
+  
+  tiempos <- seq(0, tf, by = dt)        # Discretización del tiempo entre 0 y t_f
+  n <- length(tiempos)                  # Queda definido n : el numero de pasos
+  # Matriz para almacenar las trayectorias, n pasos x m trayectorias
+  trayectorias <- matrix(0, nrow = n, ncol = m)
+  trayectorias[1, ] <- X0               # A tiempo 0, todas inician en la condicion inicial X_0
+  
+  for (i in 2:n) {
+    # Para no sobrecargar la notacion calculamos primero la media y la desviacion estandar del paso
+    mu_t <- mu + (trayectorias[i-1, ] - mu) * exp(- alpha * dt)
+    sigma_t <- sigma * sqrt((1 - exp(-2 * alpha * dt)) / (2 * alpha))
+    # Con ellas, hacemos una simulacion montecarlo para el i-esimo paso de todas las trayectorias
+    trayectorias[i, ] <- mu_t + sigma_t * rnorm(m, 0, 1)
+  }
+  return(list(tiempos = tiempos, trayectorias = trayectorias))
+}
+
+# para reducir el codigo, haremos una funcion para graficar las trayectorias de la funcion ornstein_uhlenbeck.
+# Observese que esta funcion simula y grafica a la vez
+graficar_trayectorias<-function(alpha,r_eq,sigma,r0,tf,dt,m,semilla){
+  
+  set.seed(semilla)
+  simulacion <- ornstein_uhlenbeck(mu = r_eq,alpha,sigma,r0,tf,dt,m)
+
+  datos_largos <- lapply(1:m, function(i) {
+                              data.frame(
+                                    Trayectoria = i,
+                                    Tiempo = simulacion$tiempo,
+                                    Tasa = simulacion$trayectorias[, i]   )
+                }) %>% do.call(rbind, . )
+
+  # Ahora si a graficar (:
+  g <- ggplot( datos_largos, aes(x = Tiempo, y = Tasa, color = factor(Trayectoria) )  ) +
+      geom_line(linewidth = 0.5) +
+      geom_hline(yintercept = 0, linetype = "dotdash", color = "#3B3B3B", size = 0.5) +
+      geom_hline(yintercept = r_eq, linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.5) +
+      scale_color_viridis_d(option = "magma")  +  ylim(c(-0.10,0.60)) +
+      labs(   title = "Simulación del modelo de Vasicek",
+          x = "Tiempo", y = "Tasa", color = "Trayectoria"   ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = ifelse(dim(simulacion$trayectorias)[2]>=20,"none","right")  )
+  
+  return(list(datos = simulacion$trayectorias, tiempos = simulacion$tiempo, graficas = g))
+}
+```
+
+
+```{r}
+esp<-function(t,x_0,alpha,r_eq)  return( r_eq + (x_0 - r_eq)*exp(-alpha*t)  )
+
+# eleccion = 1 para media, 0 para mediana
+estadisticas <- function(datos,tiempos,significancia){
+  n <- length(tiempos)
+  # Aqui se van a guardar las estadisticas para cada punto en el tiempo en el que hayan datos
+  lim_inf <- lim_sup <- lim_inf2 <- lim_sup2 <- lim_inf3 <- lim_sup3 <- mediana <- media <- desv_est <- numeric(n)  
+
+  for(t in 1:n){
+      # La muestra son la observacion de todas las trayectorias en el tiempo t
+        muestra <- datos[t,]
+     lim_inf[t] <- quantile(muestra,significancia/2)
+     lim_sup[t] <- quantile(muestra,1-significancia/2)
+    lim_inf2[t] <- quantile(muestra,significancia)
+    lim_sup2[t] <- quantile(muestra,1-significancia)
+    lim_inf3[t] <- quantile(muestra,3/2*significancia)
+    lim_sup3[t] <- quantile(muestra,1-3/2*significancia)
+     mediana[t] <- quantile(muestra,0.5)
+       media[t] <- mean(muestra)
+    desv_est[t] <- sd(muestra)
+  }
+  # guardo en jugo toda la informacion que acabo de calcular para cada punto en el tiempo (renglones)
+  jugo <- data.frame(tiempos, lim_inf, lim_sup, lim_inf2, lim_sup2, lim_inf3, lim_sup3, mediana, media, desv_est, 
+                      esperanza = esp(tiempos,datos[1],alpha,r_eq) )
+
+  # paso a formato largo el data frame anterior con pivot_longer
+  jugo_largo <- jugo %>%
+  tidyr::pivot_longer(cols = c(lim_inf, lim_sup, lim_inf2, lim_sup2, lim_inf3, lim_sup3, mediana, media, desv_est, esperanza),
+                      names_to = "estadistica", values_to = "estimacion")
+    # Grafico
+    g <- ggplot( jugo_largo %>% filter(grepl("lim|media", estadistica)), 
+                 aes(x = tiempos, y = estimacion, color = estadistica)  ) +
+    geom_line(size = 0.6) + ylim(c(-0.20,0.65)) +
+    geom_hline(yintercept = 0, linetype = "dotdash", color = "#3B3B3B", size = 0.5) +
+    geom_line( aes(x = tiempos, y = esp(tiempos, datos[1], alpha, r_eq) ),
+                  color = "gray70", linetype = "dotdash", size = 0.3 ) +
+    labs(title = "Intervalos de confianza, media y mediana Monte Carlo",
+          x = "Tiempo", y = "Valor") +
+    scale_color_manual(values = c("lim_inf" = "#8B3A3A", "lim_sup" = "#8B3A3A", 
+                                "lim_inf2" = "#FFA07A", "lim_sup2" = "#FFA07A",
+                                "lim_inf3" = "#EECBAD", "lim_sup3" = "#EECBAD",
+                                "mediana" = "#C6E2FF", "media" = "#00FF7F"  )) +
+    dark_theme_gray() +
+    theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = "right"  )   
+    
+    return(list(estadisticas = jugo, grafica = g))
+}
+```
+
+Probemos para estas 60 trayectorias con \(t_f  = 60\), \(dt=0.5\), \(r_0=0.1\), \(\theta = (0.5,0.2,0.08)\) 
+
+Con un nivel de significancia de 0.05, los intervalos de confianza calculados son al 95%, 90% y 85% de confianza respectivamente. *(en lo sucesivo se trabajara con este nivel de significancia, aunque se puede mover libremente en el codigo)*
+
+```{r, fig.width=12, fig.height=6}
+semilla = 48
+tf = 60                        
+m = 60                           
+dt = 1/2                         
+r0 = 0.1
+alpha = 0.50
+r_eq = 0.20                      
+sigma = 0.08
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+tiempos <- x$tiempos
+x$graficas
+```
+
+
+Su intervalo de confianza, media y mediana se ven:
+
+```{r, fig.width=10, fig.height=6, fig.align='center'}
+y <- estadisticas(datos,tiempos,0.05)
+y$grafica
+#c(0.2-mean(y$estadisticas$desv_est) , 0.2 + mean(y$estadisticas$desv_est) )
+```
+
+Probemos con otros datos y **muchas mas trayectorias**, ahora que sean 400 y \(t_f  = 90\), \(dt=0.5\), \(r_0=0.222\), \(\theta = (0.3,0.16,0.06)\)
+
+```{r, fig.width=12, fig.height=6}
+semilla = 48
+tf = 90                        
+m = 400                           
+dt = 1/2                
+r0 = 0.222
+alpha = 0.30
+r_eq = 0.16                      
+sigma = 0.06
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+tiempos <- x$tiempos
+x$graficas
+```
+
+```{r, fig.width=10, fig.height=6, fig.align='center'}
+y <- estadisticas(datos,tiempos,0.05)
+y$grafica
+```
+
+Mantengamos los parametros de simulacion pero disminuyamos el tamaño de paso a \(\Delta t = \frac{1}{8}\)
+
+```{r, fig.width=12, fig.height=6}
+semilla = 48
+tf = 90                        
+m = 400                           
+dt = 1/12                
+r0 = 0.222
+alpha = 0.30
+r_eq = 0.16                      
+sigma = 0.06
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+tiempos <- x$tiempos
+x$graficas
+```
+
+Observese que son muchas simulaciones 
+
+```{r, fig.width=10, fig.height=6, fig.align='center'}
+y <- estadisticas(datos,tiempos,0.05)
+y$grafica
+```
+
+Disminuyamos aun mas el tamaño de paso a \(\Delta t = \frac{1}{24}\) para apegarnos mucho a lo que serian 500 trayectorias continuas, disminuyendo \(\alpha\) para ver una convergencia mas tardia a la tasa de equilibrio. Observese que la siguiente grafica contiene 2160 puntos simulados de 500 trayectorias, es decir **¡1,080,000 puntos simulados en total!** *(\(90 \cdot 24 \cdot 300 = 2160 \cdot 500 = 1080000\) )* 
+
+-   \(t_f = 90\), 
+
+-   \(m = 500\), 
+
+-   \(\Delta t = \frac{1}{24} \),
+
+-   \(r_0 = 0.1\),
+
+-   \(\theta \, = \, (\, \alpha, \, r_e, \, \sigma\, ) \, = \, (\, 0.20,\,0.25,\,0.05\,)  \)
+
+```{r, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+semilla = 48
+tf = 90                        
+m = 500                           
+dt = 1/24                
+r0 = 0.1
+alpha = 0.20
+r_eq = 0.25                      
+sigma = 0.05
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+tiempos <- x$tiempos
+x$graficas
+```
+
+*Se ve impresionante, parece una descarga electrica*. Los intervalos de confianza y media de ese conjunto de trayectorias es:
+
+```{r, fig.width=10, fig.height=6, fig.align='center'}
+y <- estadisticas(datos,tiempos,0.05)
+y$grafica
+```
+
+Se aprecia una convergencia clara a la esperanza teorica presentada al final de la seccion anterior

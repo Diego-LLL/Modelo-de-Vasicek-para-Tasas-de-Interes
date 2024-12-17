@@ -1,0 +1,418 @@
+---
+title: "Valuacion de Instrumentos"
+author: "Diego"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+# Librerias
+library(dplyr)
+library(knitr)
+# Para las graficas y los colores
+library(ggplot2)
+library(paletteer)
+if (!requireNamespace("ggsci", quietly = TRUE)) install.packages("ggsci")
+library(ggsci)
+library(ggdark)
+library(patchwork)
+```
+
+```{r simulacion de trayectorias}
+# Funciones de archivos anteriores necesarios para esta seccion
+ornstein_uhlenbeck <- function( mu, alpha, sigma, X0, tf, dt, m) {
+  
+  tiempos <- seq(0, tf, by = dt)        # Discretización del tiempo entre 0 y t_f
+  n <- length(tiempos)                  # Queda definido n : el numero de pasos
+  # Matriz para almacenar las trayectorias, n pasos x m trayectorias
+  trayectorias <- matrix(0, nrow = n, ncol = m)
+  trayectorias[1, ] <- X0               # A tiempo 0, todas inician en la condicion inicial X_0
+  
+  for (i in 2:n) {
+    # Para no sobrecargar la notacion calculamos primero la media y la desviacion estandar del paso
+    mu_t <- mu + (trayectorias[i-1, ] - mu) * exp(- alpha * dt)
+    sigma_t <- sigma * sqrt((1 - exp(-2 * alpha * dt)) / (2 * alpha))
+    # Con ellas, hacemos una simulacion montecarlo para el i-esimo paso de todas las trayectorias
+    trayectorias[i, ] <- mu_t + sigma_t * rnorm(m, 0, 1)
+  }
+  return(list(tiempos = tiempos, trayectorias = trayectorias))
+}
+
+# para reducir el codigo, haremos una funcion para graficar las trayectorias de la funcion ornstein_uhlenbeck.
+# Observese que esta funcion simula y grafica a la vez
+graficar_trayectorias<-function(alpha,r_eq,sigma,r0,tf,dt,m,semilla){
+  
+  set.seed(semilla)
+  simulacion <- ornstein_uhlenbeck(mu = r_eq,alpha,sigma,r0,tf,dt,m)
+
+  datos_largos <- lapply(1:m, function(i) {
+                              data.frame(
+                                    Trayectoria = i,
+                                    Tiempo = simulacion$tiempo,
+                                    Tasa = simulacion$trayectorias[, i]   )
+                }) %>% do.call(rbind, . )
+
+  # Ahora si a graficar (:
+  g <- ggplot( datos_largos, aes(x = Tiempo, y = Tasa, color = factor(Trayectoria) )  ) +
+      geom_line(linewidth = 0.5) +
+      geom_hline(yintercept = 0, linetype = "dotdash", color = "#3B3B3B", size = 0.5) +
+      geom_hline(yintercept = r_eq, linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.5) +
+      scale_color_viridis_d(option = "magma")  +  ylim(c(0.0975,0.12)) +
+      labs(   title = "Simulación del modelo de Vasicek",
+          x = "Tiempo", y = "Tasa", color = "Trayectoria"   ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5),
+              #legend.position = ifelse(dim(simulacion$trayectorias)[2]>=20,"none","right")  )
+              legend.position = "none")
+  return(list(datos = simulacion$trayectorias, tiempos = simulacion$tiempo, graficas = g))
+}
+```
+
+```{r log verosimilitud}
+# datos debe ser un vector
+log_verosimilitud <- function(theta, datos, dt){
+  
+  alpha <- theta[1]
+  r_e   <- theta[2]
+  sigma <- theta[3]
+  r <- datos
+  
+  # alpha y sigma deben ser positivos (no pueden ni siquiera ser 0 o logL(theta) se indetermina)
+  if (is.na(alpha) || is.na(sigma) || alpha <= 0 || sigma <= 0)    return(-1000)
+  n <- length(datos) - 1     # porque en cada iteracion usaremos el indice i y i+1
+  logL <- - n/2 * log(2*pi)    # inicializo en los terminos que no dependen del indice t
+  
+  for(t in 2:n){
+    mu_t <- r_e + ( r[t-1] - r_e ) * exp(-alpha*dt)
+    sigma_t <- sigma * sqrt( (1-exp(-2*alpha*dt)) / (2*alpha) )
+    logL <- logL - log(sigma_t) - 1/2 * ( (r[t]-mu_t) / sigma_t )^2         # voy acumulando
+  }
+return(logL)  
+}
+```
+
+```{r algoritmo simulated annealing}
+simulated_annealing_vasicek <- function( theta_0, datos, dt, freno){
+  
+  # Inicializo una variable que va a ir conservando solo los mejores conjuntos de parametros 
+  # para theta. Recordemos que theta = ( alpha, r_e, sigma )
+  theta_actual <- theta_0
+  logL_actual <- log_verosimilitud(theta_0,datos,dt)
+  # parametros para modificar la escala de las distribuciones de propuesta de cada parametro de theta
+  c1 <- 0.1
+  #c2 <- 0.01
+  c2 <- 0.004
+  c3 <- 0.005
+  # Creo una matriz para guardar los parametros y la log verosimilitud
+  recorrido <- matrix(0,freno,4)
+  colnames(recorrido) <- c("alpha","r_e","sigma","logL")
+  recorrido[1,] <- c(theta_actual,logL_actual)
+  
+  # Comienza el Simulated Annealing
+  for(i in 2:freno){
+    #Temp <- 100/log(2*i)
+    Temp <- 10/i
+    # Simulo de theta propuesta de las distribuciones de propuesta
+    alpha <- rnorm(1,theta_actual[1],c1)
+    r_e   <- rnorm(1,theta_actual[2],c2)
+    sigma <- rnorm(1,theta_actual[3],c3)
+    theta_prop <- c(alpha,r_e,sigma)
+    logL_prop <- log_verosimilitud(theta_prop,datos,dt)
+    # Calculamos la probabilidad rho de aceptar el nuevo valor
+    rho <- min(  exp( (logL_prop - logL_actual)/Temp ), 1  )
+    if( runif(1) < rho ) {
+        theta_actual <- theta_prop
+        logL_actual <- logL_prop
+    }  
+    recorrido[i,] <- c(theta_actual,logL_actual)
+  } 
+  return(recorrido)
+}
+```
+
+```{r simulated annealing con graficas}
+# Del mismo modo, crearemos una funcion para mostrar los resultados del simulated annealing.
+est_simulated_annealing <- function(datos, dt, freno){
+  set.seed(48)
+  # Inicializacion
+  alpha = (mean(datos)/sd(datos)-1)/2
+  r_eq = mean(datos)
+  sigma = sd(datos)
+  
+  # Simulated Annealing
+  result <- simulated_annealing_vasicek( c(alpha,r_eq,sigma), datos, dt, freno )
+  # la ultima iteracion del algoritmo contiene los parametros que encontro en las columnas 1:3
+  # en la ultima viene la log verosimilitud maximizada
+  
+  # Resultados del Simulated Annealing
+  round(result[freno,],4)
+  resultados <- data.frame( alpha = result[freno,1], r_e = result[freno,2], sigma = result[freno,3],
+                            logL = result[freno,4] )
+  row.names(resultados) <- paste("iteraciones: ",freno)
+  
+  # Graficar el recorrido del algoritmo
+  recorrido <- data.frame( iteracion = 1:freno, alpha = result[,1], r_e = result[,2], 
+                         sigma = result[,3], logL = result[,4])
+  # Para agilizar la graficacion, reducire el data frame recorrido, conservando 1 renglon cada 4
+  recorrido <- recorrido[seq(1, freno, by = 4), ]
+  
+  g_a <- ggplot( recorrido, aes(x = iteracion, y = logL )  ) +
+      geom_line(linewidth = 0.5, color="#F0F0F0") +
+      labs(   title = "Evolucion de la log-verosimilitud", x = "Iteracion", y = "LogL" ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5), legend.position = "bottom"  ) 
+
+  g_b <- ggplot( recorrido, aes(x = iteracion, y = alpha )  ) +
+      geom_line(linewidth = 0.5, color="#4EEE94") +
+      geom_hline(yintercept = result[freno,1], linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.15) +
+      labs(   title = "Evolucion de alpha", x = "Iteracion", y = "alpha estimado" ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5), legend.position = "bottom"  )
+
+  g_c <- ggplot( recorrido, aes(x = iteracion, y = r_e )  ) +
+      geom_line(linewidth = 0.5, color="#EEC900") +
+      geom_hline(yintercept = result[freno,2], linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.15) +
+      labs(   title = "Evolucion de r_e", x = "Iteracion", y = "r_e estimado" ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5), legend.position = "bottom"  )
+
+  g_d <- ggplot( recorrido, aes(x = iteracion, y = sigma )  ) +
+      geom_line(linewidth = 0.5, color="#EEAEEE") +
+      geom_hline(yintercept = result[freno,3], linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.15) +
+      labs(   title = "Evolucion de sigma", x = "Iteracion", y = "sigma estimado" ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5), legend.position = "bottom"  )
+
+  design <- "
+    12
+    34  "
+
+  g <- g_a + g_b + g_c + g_d + plot_layout(design = design)
+  
+  return(list(resultados = resultados, graficas = g))
+}
+# La funcion arroja una lista de 2 cosas: Los resultados y Graficas del recorrido del algoritmo
+```
+
+```{r estadisticas}
+esp<-function(t,x_0,alpha,r_eq)  return( r_eq + (x_0 - r_eq)*exp(-alpha*t)  )
+
+estadisticas <- function(datos,tiempos,significancia){
+  n <- length(tiempos)
+  # Aqui se van a guardar las estadisticas para cada punto en el tiempo en el que hayan datos
+  lim_inf <- lim_sup <- lim_inf2 <- lim_sup2 <- lim_inf3 <- lim_sup3 <- media <- desv_est <- numeric(n)  
+
+  for(t in 1:n){
+      # La muestra son la observacion de todas las trayectorias en el tiempo t
+        muestra <- datos[t,]
+     lim_inf[t] <- quantile(muestra,significancia/2)
+     lim_sup[t] <- quantile(muestra,1-significancia/2)
+    lim_inf2[t] <- quantile(muestra,significancia)
+    lim_sup2[t] <- quantile(muestra,1-significancia)
+    lim_inf3[t] <- quantile(muestra,3/2*significancia)
+    lim_sup3[t] <- quantile(muestra,1-3/2*significancia)
+     #mediana[t] <- quantile(muestra,0.5)
+       media[t] <- mean(muestra)
+    desv_est[t] <- sd(muestra)
+  }
+  # guardo en jugo toda la informacion que acabo de calcular para cada punto en el tiempo (renglones)
+  jugo <- data.frame(tiempos, lim_inf, lim_sup, lim_inf2, lim_sup2, lim_inf3, lim_sup3, media, desv_est, 
+                      esperanza = esp(tiempos,datos[1],alpha,r_eq) )
+
+  # paso a formato largo el data frame anterior con pivot_longer
+  jugo_largo <- jugo %>%
+  tidyr::pivot_longer(cols = c(lim_inf, lim_sup, lim_inf2, lim_sup2, lim_inf3, lim_sup3, media, desv_est, esperanza),
+                      names_to = "estadistica", values_to = "estimacion")
+    # Grafico
+    g <- ggplot( jugo_largo %>% filter(grepl("lim|media", estadistica)), 
+                 aes(x = tiempos, y = estimacion, color = estadistica)  ) +
+    geom_line(size = 0.6) + ylim(c(0.0975,0.12)) +
+    geom_hline(yintercept = 0, linetype = "dotdash", color = "#3B3B3B", size = 0.5) +
+    geom_line( aes(x = tiempos, y = esp(tiempos, datos[1], alpha, r_eq) ),
+                  color = "gray70", linetype = "dotdash", size = 0.3 ) +
+    labs(title = "Intervalos de confianza, media y mediana Monte Carlo",
+          x = "Tiempo", y = "Valor") +
+    scale_color_manual(values = c("lim_inf" = "#8B3A3A", "lim_sup" = "#8B3A3A", 
+                                "lim_inf2" = "#FFA07A", "lim_sup2" = "#FFA07A",
+                                "lim_inf3" = "#EECBAD", "lim_sup3" = "#EECBAD",
+                                "media" = "snow"  )) +
+    dark_theme_gray() +
+    theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = "right"  )   
+    
+    return(list(estadisticas = jugo, grafica = g))
+}
+```
+
+```{r importacion de datos, include=FALSE}
+# Importacion de datos
+datos_completos <- read.csv("C:/Users/elsol/Desktop/MESA/Simulacion/Vasicek/Remix/Banxico1.csv")
+# Limpieza rapida
+datos_completos$fecha <- as.Date(datos_completos$Fecha,format="%d/%m/%Y") 
+datos_completos$tasas <- datos_completos[,2]/100
+datos_completos <- datos_completos %>% select(fecha, tasas)
+# Verificamos si hay datos faltantes
+sum(is.na(datos_completos))
+# Un resumen rapido de los datos
+summary(datos_completos)
+```
+
+# Valuacion de Bonos Cuponados
+
+Tomando la serie de tasas diarias de la TIIE, obtenidas de Banxico, estos son los parametros del modelo de vasicek:
+
+```{r, include = FALSE}
+# Quedemonos con los datos de 2024
+datos <- datos_completos %>% filter(fecha>=as.Date("2024-01-01"))
+summary(datos)
+
+dt = 1
+freno = 10000
+y <- est_simulated_annealing(datos$tasas, dt, freno)
+```
+
+```{r fig.align='center', fig.width=7, fig.height=5}
+y$resultados
+y$graficas
+```
+
+A continuacion, simularemos trayectorias bajo el modelo de Vasicek con los parametros que acabamos de estimar para nuestro conjunto de datos. Simularemos a un plazo de 60 dias; 
+
+  1.     Primero simularemos 10 trayectorias con 2 pasos por dia, i.e un paso cada 12 horas
+
+  2.     Despues las mismas 20 trayectorias con 6 pasos por dia, i.e. un paso cada 4 horas
+
+  3.     Despues simularemos 50 trayectorias con 12 pasos por dia, i.e. un paso cada 2 horas
+
+  4.     Al final simulamos 500 trayectorias con 48 pasos por dia, i.e. un paso cada 30 minutos
+
+```{r}
+semilla = 48
+tf = 60                        
+m = 10                           
+dt = 1/2                         
+r0 = datos$tasas[length(datos)]
+alpha = as.numeric(y$resultados[1])
+r_eq =  as.numeric(y$resultados[2])                      
+sigma = as.numeric(y$resultados[3])
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+#simulaciones <- x$datos
+g1 <- x$graficas
+
+#.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-
+m = 20                           
+dt = 1/6                        
+r0 = datos$tasas[length(datos)]
+alpha = as.numeric(y$resultados[1])
+r_eq =  as.numeric(y$resultados[2])                      
+sigma = as.numeric(y$resultados[3])
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+#simulaciones <- x$datos
+g2 <- x$graficas
+
+#.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-
+m = 50                           
+dt = 1/12                         
+r0 = datos$tasas[length(datos)]
+alpha = as.numeric(y$resultados[1])
+r_eq =  as.numeric(y$resultados[2])                      
+sigma = as.numeric(y$resultados[3])
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+#simulaciones <- x$datos
+g3 <- x$graficas
+
+#.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-
+m = 500                           
+dt = 1/48
+r0 = datos$tasas[length(datos)]
+alpha = as.numeric(y$resultados[1])
+r_eq =  as.numeric(y$resultados[2])                      
+sigma = as.numeric(y$resultados[3])
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+simulaciones <- x$datos
+tiempos <- x$tiempos
+g4 <- x$graficas
+```
+
+```{r , fig.align='center', fig.width=12, fig.height=25}
+g1 / g2 / g3 / g4
+```
+
+Observese que en la ultima estamos simulando \(500 \cdot 60 \cdot 48 \, = \, 1,440,000\) datos.
+
+# Valuacion de un Bono
+
+### ¿Que es un bono cuponado?
+
+Es un instrumento de deuda emitido por una entidad (gobierno, empresa u organismo) que paga periódicamente al inversor un pago de intereses por medio de cupones durante la vida del bono, hasta su fecha de vencimiento, momento en el que también se devuelve el capital invertido.
+
+En otras palabras, el bono cupónado es un préstamo que el inversor otorga al emisor a cambio de pagos periódicos de intereses (cupones) y el reembolso del valor nominal al vencimiento.
+
+
+### ¿Como usaremos el Modelo de Vasicek?
+
+Supongamos que queremos valuar un bono con vencimiento a 2 meses, con los siguientes cupones quincenales: $(100,75,50,25)
+
+Aprovechando las ultimas 500 simulaciones del modelo de vasicek convenientemente realizadas a 2 meses, la media y los intervalos de confianza muestrales al 95%, 90% y 85% respectivamente son:
+
+```{r, fig.width=10, fig.height=6, fig.align='center'}
+y <- estadisticas(simulaciones,tiempos,0.05)
+y$grafica
+```
+
+Extraeremos de ahi, la media y los intervalos de confianza en los 4 tiempos de valuacion del bono. Y aplicaremos la formula de valuacion siguiente, en donde cuando sustituyamos las tasas de descuento con las medias de la simulacion vasicek tendremos la tasa con la que traeremos a valor presente cada cupon y cuando sustituyamos los tasas de los intervalos de confianza de la simulacion vasicek, obtendremos intervalos de confianza para la valuacion del bono.
+
+$$
+P \, = \, \frac{F}{(1+r_n)^n} \, + \,\sum_{t=1}^n \frac{C_t}{(1+r_t)^t}
+$$
+
+donde F es el valor nominal y \(C_t\) los cupones al tiempo t, \(r_t\) las tasas al tiempo t y n el numero de cupones. 
+
+El valor Presente de dicho bono y los intervalos de confianza para este son:
+
+```{r}
+#¿Cuanto valdria un bono con vencimiento a 2 meses y cupones quincenales?
+
+tiempos_cupon <- c(15,30,45,60)
+cupones <- c(100,75,50,25)
+valor_redencion <- 1000
+n <- length(cupones)
+
+tasas_montecarlo <- y$estadisticas %>% filter( tiempos %in% tiempos_cupon ) %>% select(-tiempos)
+# Observese que las tasas son anuales, las queremos quincenales:
+tasas_montecarlo <- (1+tasas_montecarlo)^(1/24)-1
+
+valor_presente <- 0
+for(t in 1:n){
+  valor_presente <- valor_presente + cupones[t]*(1+tasas_montecarlo$media[t])^(-t)
+}
+valor_presente <- valor_presente + valor_redencion*(1+tasas_montecarlo$media[n])^(-n)
+
+kable( data.frame(valor_presente = valor_presente), align = "c" )
+```
+
+```{r}
+tasas_montecarlo$cupones <- cupones
+tasas_montecarlo$t <- 1:length(tiempos_cupon)
+df <-tasas_montecarlo[,c(1:6,10:11)] %>% transmute( inf1 = cupones/((1+lim_sup)^t), sup1 = cupones/((1+lim_inf)^t),
+                                            inf2 = cupones/((1+lim_sup2)^t), sup2 = cupones/((1+lim_inf2)^t),
+                                            inf3 = cupones/((1+lim_sup3)^t), sup3 = cupones/((1+lim_inf3)^t)) %>%
+      summarise(lim_inf1 = sum(inf1), lim_sup1 = sum(sup1), lim_inf2 = sum(inf2), lim_sup2 = sum(sup2), 
+                lim_inf3 = sum(inf3), lim_sup3 = sum(sup3))
+
+
+intervalos <- df + valor_redencion*(1+tasas_montecarlo[4,c(2,1,4,3,6,5)])^(-n)
+intervalos <- round(intervalos,2)
+
+paste("El intervalo al 95% de confianza es: ( $",intervalos[1],", $",intervalos[2],")")
+paste("El intervalo al 90% de confianza es: ( $",intervalos[3],", $",intervalos[4],")")
+paste("El intervalo al 85% de confianza es: ( $",intervalos[5],", $",intervalos[6],")")
+```
+
+Observese que los intervalos estan alrededor del estimador puntual del precio del bono y son de una longitud muy pequeña, por lo que son muy precisos con un alto nivel de confianza.
+

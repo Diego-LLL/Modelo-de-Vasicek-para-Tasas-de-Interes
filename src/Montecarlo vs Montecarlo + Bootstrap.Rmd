@@ -1,0 +1,435 @@
+---
+title: "Monte Carlo vs Monte Carlo con Bootstrap"
+subtitle: "para intervalos de Confianza y otras estadisticas de r_t"
+author: "Diego"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+library(tidyverse)
+# Librerias
+library(dplyr)
+library(knitr)
+# Para las graficas y los colores
+library(ggplot2)
+library(paletteer)
+if (!requireNamespace("ggsci", quietly = TRUE)) install.packages("ggsci")
+library(ggsci)
+library(ggdark)
+library(patchwork)
+# Paletas
+paleta_1 <- "ggsci::default_nejm"
+```
+
+
+Al trabajar con datos reales, ya no conoceremos los valores verdaderos de \(\theta\) bajo el modelo. Por ello nos detuvimos tanto en la parte de estimacion de parametros, para asegurar que habiamos llegado a un algoritmo de Simulated Annealing confiable 
+
+El esquema con el que vamos a abordar el problema sera:
+
+  1.     Importar el conjunto de datos con el que trabajaremos en el modelo de Vasicek
+
+  2.     Estimar los parametros
+  
+  3.     Simular m trayectorias del modelo *(con los parametros estimados)*
+  
+  4.     Compararlas visualmente con la trayectoria real observada de los datos, buscando alguna señal de que el ajuste no fue bueno.
+  
+  5.     Mediante **Bootstrap** haremos inferencia sobre el modelo ya ajustado
+  
+  6.     Usar lo anterior para predecir el comportamiento futuro de los datos asi como para valuar bonos u otros activos financieros que dependan de tasas de interes
+  
+  
+## Bootstrap para re-muestrear trayectorias
+
+```{r}
+ornstein_uhlenbeck <- function( mu, alpha, sigma, X0, tf, dt, m) {
+  
+  tiempos <- seq(0, tf, by = dt)        # Discretización del tiempo entre 0 y t_f
+  n <- length(tiempos)                  # Queda definido n : el numero de pasos
+  # Matriz para almacenar las trayectorias, n pasos x m trayectorias
+  trayectorias <- matrix(0, nrow = n, ncol = m)
+  trayectorias[1, ] <- X0               # A tiempo 0, todas inician en la condicion inicial X_0
+  
+  for (i in 2:n) {
+    # Para no sobrecargar la notacion calculamos primero la media y la desviacion estandar del paso
+    mu_t <- mu + (trayectorias[i-1, ] - mu) * exp(- alpha * dt)
+    sigma_t <- sigma * sqrt((1 - exp(-2 * alpha * dt)) / (2 * alpha))
+    # Con ellas, hacemos una simulacion montecarlo para el i-esimo paso de todas las trayectorias
+    trayectorias[i, ] <- mu_t + sigma_t * rnorm(m, 0, 1)
+  }
+  return(list(tiempos = tiempos, trayectorias = trayectorias))
+}
+
+# para reducir el codigo, haremos una funcion para graficar las trayectorias de la funcion ornstein_uhlenbeck.
+# Observese que esta funcion simula y grafica a la vez
+graficar_trayectorias<-function(alpha,r_eq,sigma,r0,tf,dt,m,semilla){
+  
+  set.seed(semilla)
+  simulacion <- ornstein_uhlenbeck(mu = r_eq,alpha,sigma,r0,tf,dt,m)
+
+  datos_largos <- lapply(1:m, function(i) {
+                              data.frame(
+                                    Trayectoria = i,
+                                    Tiempo = simulacion$tiempo,
+                                    Tasa = simulacion$trayectorias[, i]   )
+                }) %>% do.call(rbind, . )
+
+  # Ahora si a graficar (:
+  g <- ggplot( datos_largos, aes(x = Tiempo, y = Tasa, color = factor(Trayectoria) )  ) +
+      geom_line(linewidth = 0.5) +
+      geom_hline(yintercept = 0, linetype = "dotdash", color = "#3B3B3B", size = 0.5) +
+      geom_hline(yintercept = r_eq, linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.5) +
+      scale_color_viridis_d(option = "magma")  +  ylim(c(-0.10,0.60)) +
+      labs(   title = "Simulación del modelo de Vasicek",
+          x = "Tiempo", y = "Tasa", color = "Trayectoria"   ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = ifelse(dim(simulacion$trayectorias)[2]>=20,"none","right")  )   
+  
+  return(list(datos = simulacion$trayectorias, tiempos = simulacion$tiempo, graficas = g))
+}
+```
+
+```{r, fig.width=12, fig.height=6}
+semilla = 48
+tf = 60                        
+m = 50                           
+dt = 1/2                         
+r0 = 0.1
+alpha = 0.45
+r_eq = 0.20                      
+sigma = 0.08
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+tiempos <- x$tiempos
+x$graficas
+```
+
+Para mostrar como se uso el bootstrap para los intervalos de confianza, veamos la construccion paso a paso: Supongamos que estamos interesados en el intervalo de confianza al 95% para el dia 40
+
+```{r, include = F}
+significancia <- 0.05
+cbind(tiempos,datos)
+
+# El dia 40 es el indice 81 del vector de tiempos
+which(tiempos == 40)
+
+# Me quedo con las observaciones de todas las trayectorias para el dia 40 y esa sera mi muestra original
+muestra <- datos[81,]
+
+# Observese que los cuantiles empiricos que dan lugar al intervalo de confianza empirico son:
+c( quantile(muestra,significancia/2), quantile(muestra,1-significancia/2) )
+
+# El bootstrap
+B <- 500
+lim_inf <- lim_sup <- numeric(B)
+mediana <- media <- numeric(B)
+for( b in 1:B ){
+  muestra_bootstrap <- sample(muestra, size = 500, replace = TRUE)
+  lim_inf[b] <- quantile(muestra_bootstrap, significancia/2)
+  lim_sup[b] <- quantile(muestra_bootstrap, 1-significancia/2)
+     mediana[b] <- quantile(muestra_bootstrap,0.5)
+     media[b] <- mean(muestra_bootstrap)
+}
+
+# El intervalo de confianza tras nuestro Bootstrap es:
+c( mean(lim_inf), mean(lim_sup) )
+
+# Ahora comparemos la mediana y media bootstrap
+c( mean(mediana), mean(media))
+# Con la mediana y media empirica
+c( quantile(muestra,0.5), mean(muestra) )
+```
+
+Calculamos para cada tiempo t en el que hay datos:
+
+-   intervalos de confianza
+
+-   mediana
+
+-   media
+
+Primero muestralmente y luego utilizando remuestro Bootstrap con 200 muestras bootstrap y que el tamaño de cada una sea del doble de la muestra original, es decir 2m trayectorias
+
+```{r}
+B <- 200           # Numero de muestras bootstrap
+mboot <- 2*m       # Tamaño de cada muestra bootstrap
+n <- length(tiempos)
+
+lim_inf <- lim_sup <- lim_inf_empirico <- lim_sup_empirico <- numeric(n)  
+mediana <- media <- mediana_empirica <- media_empirica <- desv_empirica <- desv <- numeric(n)
+for(t in 1:n){
+  # La muestra son la observacion de todas las trayectorias en el tiempo t
+  muestra <- datos[t,]
+  # El limite inferior y superior del intervalo de confianza lo obtenemos de inmediato
+  lim_inf_empirico[t] <- quantile(muestra,significancia/2)
+  lim_sup_empirico[t] <- quantile(muestra,1-significancia/2)
+  # Tambien la desviacion estandar, media y la mediana del proceso a tiempo t empiricamente
+  mediana_empirica[t] <- quantile(muestra,0.5)
+    media_empirica[t] <- mean(muestra)
+     desv_empirica[t] <- sd(muestra)
+             
+  # Ahora calcularemos las mismas estadisticas con Bootstrap
+  inferior <- superior <- numeric(B)
+  m1 <- m2 <- d <- numeric(B)
+  for( b in 1:B ){
+    muestra_bootstrap <- sample(muestra, size = mboot, replace = TRUE)
+    inferior[b] <- quantile(muestra_bootstrap, significancia/2)
+    superior[b] <- quantile(muestra_bootstrap, 1-significancia/2)
+          m1[b] <- quantile(muestra_bootstrap,0.5)
+          m2[b] <- mean(muestra_bootstrap)
+           d[b] <- sd(muestra_bootstrap)
+  }
+  lim_inf[t] <- mean(inferior)
+  lim_sup[t] <- mean(superior)
+  mediana[t] <- mean(m1)
+    media[t] <- mean(m2)
+     desv[t] <- mean(d)
+}
+
+jugo <- data.frame(tiempos, lim_inf, lim_sup, lim_inf_empirico, lim_sup_empirico, mediana, media, mediana_empirica, media_empirica, desv_empirica, desv )
+```
+
+
+```{r, fig.width=12, fig.height=6}
+# Transformar el data.frame a formato largo:
+
+# pivot_longer lo que hace es combinar todos las estadisticas calculadas en una sola columna y crea otra que identifica de que estadistica se trata (mediana, media, limite superior del i.c., etc)
+
+# grepl usa la expresion regular "lim|mediana" para buscar coincidencias por caracteres de "lim" o bien "mediana" en el df en formato largo. Digamos que lo que hace es quedarse solo con los renglones que importan para la grafica
+
+jugo_long <- jugo %>%
+  tidyr::pivot_longer(cols = c(lim_inf, lim_sup, lim_inf_empirico, lim_sup_empirico, 
+                        mediana, media, mediana_empirica, media_empirica, 
+                        desv_empirica, desv),
+               names_to = "estadistica", values_to = "estimacion")
+
+ggplot( jugo_long %>% filter(grepl("lim|mediana", estadistica)), 
+       aes(x = tiempos, y = estimacion, color = estadistica) ) +
+  geom_line(size = 0.75) + 
+  labs(title = "Intervalos de confianza y Mediana: Empírica vs. con Bootstrap",
+       x = "Tiempo", y = "Valor") +
+  scale_color_manual(values = c("lim_inf" = "#EE2C2C", "lim_sup" = "#EE2C2C", 
+                                "lim_inf_empirico" = "#8DEEEE", "lim_sup_empirico" = "#8DEEEE",
+                                "mediana_empirica" = "#B452CD", "mediana" = "#B3EE3A")) +
+                                #"media" = "darkgreen", "mediana" = "darkorange")) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = "right"  )   
+
+ggplot( jugo_long %>% filter(grepl("lim|^media$|^media_empirica$", estadistica)), 
+       aes(x = tiempos, y = estimacion, color = estadistica) ) +
+  geom_line(size = 0.75) + 
+  labs(title = "Intervalos de confianza y Media: Empírica vs. con Bootstrap",
+       x = "Tiempo", y = "Valor") +
+  scale_color_manual(values = c("lim_inf" = "#EE2C2C", "lim_sup" = "#EE2C2C", 
+                                "lim_inf_empirico" = "#8DEEEE", "lim_sup_empirico" = "#8DEEEE",
+                                "media_empirica" = "#B3EE3A", "media" = "#B452CD")) +
+                                #"media" = "darkgreen", "mediana" = "darkorange")) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 5),
+              legend.position = "right"  ) 
+
+ggplot( jugo_long %>% filter(grepl("desv", estadistica)), 
+       aes(x = tiempos, y = estimacion, color = estadistica) ) +
+  geom_line(size = 0.75) + ylim(c(0,0.35)) +
+  labs(title = "Desviacion estandar empirica y con bootstrap al tiempo t",
+       x = "Tiempo", y = "Valor") + 
+  scale_color_manual(values = c("desv_empirica" = "#8DEEEE", "desv" = "#EE2C2C")) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = "right"  )
+```
+
+Originalmente lo habiamos hecho para 500 muestras bootstrap, luego lo bajamos a 200 pero aun asi, el costo computacional no vale la pena, ya que como se puede notar en las grficas anteriores, los intervalos de confianza, medias, medianas y desviaciones estandar remuestreando con bootstrap son casi iguales a las que se obtienen calculandolas directamente de las trayectorias simuladas, pero el tiempo de ejecicion se incrementa bastante.
+
+Probamos con otros valores, aumentando todos los parametros y el numero de observaciones a ver si notamos una diferencia sustancial entre usar Bootstrap y no usarlo:
+
+```{r, fig.width=12, fig.height=6}
+semilla = 48
+tf = 90                        
+m = 50                           
+dt = 1/2                         
+r0 = 0.1
+alpha = 0.80
+r_eq = 0.30                      
+sigma = 0.15
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+tiempos <- x$tiempos
+x$graficas
+```
+
+```{r}
+B <- 200           # Numero de muestras bootstrap
+mboot <- 2*m       # Tamaño de cada muestra bootstrap
+n <- length(tiempos)
+
+lim_inf <- lim_sup <- lim_inf_empirico <- lim_sup_empirico <- numeric(n)  
+mediana <- media <- mediana_empirica <- media_empirica <- desv_empirica <- desv <- numeric(n)
+for(t in 1:n){
+  # La muestra son la observacion de todas las trayectorias en el tiempo t
+  muestra <- datos[t,]
+  # El limite inferior y superior del intervalo de confianza lo obtenemos de inmediato
+  lim_inf_empirico[t] <- quantile(muestra,significancia/2)
+  lim_sup_empirico[t] <- quantile(muestra,1-significancia/2)
+  # Tambien la desviacion estandar, media y la mediana del proceso a tiempo t empiricamente
+  mediana_empirica[t] <- quantile(muestra,0.5)
+    media_empirica[t] <- mean(muestra)
+     desv_empirica[t] <- sd(muestra)
+             
+  # Ahora calcularemos las mismas estadisticas con Bootstrap
+  inferior <- superior <- numeric(B)
+  m1 <- m2 <- d <- numeric(B)
+  for( b in 1:B ){
+    muestra_bootstrap <- sample(muestra, size = mboot, replace = TRUE)
+    inferior[b] <- quantile(muestra_bootstrap, significancia/2)
+    superior[b] <- quantile(muestra_bootstrap, 1-significancia/2)
+          m1[b] <- quantile(muestra_bootstrap,0.5)
+          m2[b] <- mean(muestra_bootstrap)
+           d[b] <- sd(muestra_bootstrap)
+  }
+  lim_inf[t] <- mean(inferior)
+  lim_sup[t] <- mean(superior)
+  mediana[t] <- mean(m1)
+    media[t] <- mean(m2)
+     desv[t] <- mean(d)
+}
+
+jugo <- data.frame(tiempos, lim_inf, lim_sup, lim_inf_empirico, lim_sup_empirico, mediana, media, mediana_empirica, media_empirica, desv_empirica, desv )
+```
+
+
+```{r, fig.width=12, fig.height=6}
+# Transformar el data.frame a formato largo:
+
+# pivot_longer lo que hace es combinar todos las estadisticas calculadas en una sola columna y crea otra que identifica de que estadistica se trata (mediana, media, limite superior del i.c., etc)
+
+# grepl usa la expresion regular "lim|mediana" para buscar coincidencias por caracteres de "lim" o bien "mediana" en el df en formato largo. Digamos que lo que hace es quedarse solo con los renglones que importan para la grafica
+
+jugo_long <- jugo %>%
+  tidyr::pivot_longer(cols = c(lim_inf, lim_sup, lim_inf_empirico, lim_sup_empirico, 
+                        mediana, media, mediana_empirica, media_empirica, 
+                        desv_empirica, desv),
+               names_to = "estadistica", values_to = "estimacion")
+
+ggplot( jugo_long %>% filter(grepl("lim|mediana", estadistica)), 
+       aes(x = tiempos, y = estimacion, color = estadistica) ) +
+  geom_line(size = 0.75) + 
+  labs(title = "Intervalos de confianza y Mediana: Empírica vs. con Bootstrap",
+       x = "Tiempo", y = "Valor") +
+  scale_color_manual(values = c("lim_inf" = "#EE2C2C", "lim_sup" = "#EE2C2C", 
+                                "lim_inf_empirico" = "#8DEEEE", "lim_sup_empirico" = "#8DEEEE",
+                                "mediana_empirica" = "#B452CD", "mediana" = "#B3EE3A")) +
+                                #"media" = "darkgreen", "mediana" = "darkorange")) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = "right"  )   
+
+ggplot( jugo_long %>% filter(grepl("lim|^media$|^media_empirica$", estadistica)), 
+       aes(x = tiempos, y = estimacion, color = estadistica) ) +
+  geom_line(size = 0.75) + 
+  labs(title = "Intervalos de confianza y Media: Empírica vs. con Bootstrap",
+       x = "Tiempo", y = "Valor") +
+  scale_color_manual(values = c("lim_inf" = "#EE2C2C", "lim_sup" = "#EE2C2C", 
+                                "lim_inf_empirico" = "#8DEEEE", "lim_sup_empirico" = "#8DEEEE",
+                                "media_empirica" = "#B3EE3A", "media" = "#B452CD")) +
+                                #"media" = "darkgreen", "mediana" = "darkorange")) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = "right"  ) 
+
+ggplot( jugo_long %>% filter(grepl("desv", estadistica)), 
+       aes(x = tiempos, y = estimacion, color = estadistica) ) +
+  geom_line(size = 0.75) + ylim(c(0,0.35)) +
+  labs(title = "Desviacion estandar empirica y con bootstrap al tiempo t",
+       x = "Tiempo", y = "Valor") + 
+  scale_color_manual(values = c("desv_empirica" = "#8DEEEE", "desv" = "#EE2C2C")) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = "right"  )
+```
+
+Una vez mas, los calculos son casi los mismos. Se puede probar con mas combinaciones de valores hasta convencerse a uno mismo de que no vale el costo computacional, por lo que en lo sucesivo se trabajara sin Bootstrap, directamente de la muestra. 
+
+Terminaremos esta seccion elaborando una funcion que, cuando introduzcamos una simulacion de m trayectorias, elabore intervalos de confianza, mediana, media y desviacion estandar muestrales, asi como el valor esperado en cada punto del tiempo de acuerdo al modelo de Vasicek
+
+Probemos para estas 60 trayectorias con \(t_f  = 60\), \(dt=0.5\), \(r_0=0.1\), \(\theta = (0.5,0.2,0.08)\) 
+
+```{r, fig.width=12, fig.height=6}
+semilla = 48
+tf = 60                        
+m = 60                           
+dt = 1/2                         
+r0 = 0.1
+alpha = 0.50
+r_eq = 0.20                      
+sigma = 0.08
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+tiempos <- x$tiempos
+x$graficas
+```
+
+```{r}
+esp<-function(t,x_0,alpha,r_eq)  return( r_eq + (x_0 - r_eq)*exp(-alpha*t)  )
+
+estadisticas <- function(datos,tiempos){
+  n <- length(tiempos)
+  # Aqui se van a guardar las estadisticas para cada punto en el tiempo en el que hayan datos
+  lim_inf <- lim_sup <- lim_inf2 <- lim_sup2 <- mediana <- media <- desv_est <- numeric(n)  
+
+  for(t in 1:n){
+      # La muestra son la observacion de todas las trayectorias en el tiempo t
+        muestra <- datos[t,]
+     lim_inf[t] <- quantile(muestra,significancia/2)
+     lim_sup[t] <- quantile(muestra,1-significancia/2)
+    lim_inf2[t] <- quantile(muestra,significancia)
+    lim_sup2[t] <- quantile(muestra,1-significancia)
+     mediana[t] <- quantile(muestra,0.5)
+       media[t] <- mean(muestra)
+    desv_est[t] <- sd(muestra)
+  }
+  # guardo en jugo toda la informacion que acabo de calcular para cada punto en el tiempo (renglones)
+  jugo <- data.frame(tiempos, lim_inf, lim_sup, lim_inf2, lim_sup2, mediana, media, desv_est, 
+                      esperanza = esp(tiempos,datos[1],alpha,r_eq) )
+
+  # paso a formato largo el data frame anterior con pivot_longer
+  jugo_largo <- jugo %>%
+  tidyr::pivot_longer(cols = c(lim_inf, lim_sup, lim_inf2, lim_sup2, mediana, media, desv_est, esperanza),
+                      names_to = "estadistica", values_to = "estimacion")
+    # Grafico
+    g <- ggplot( jugo_largo %>% filter(grepl("lim|media", estadistica)), 
+                 aes(x = tiempos, y = estimacion, color = estadistica)  ) +
+    geom_line(size = 0.6) + ylim(c(-0.20,0.65)) +
+    geom_hline(yintercept = 0, linetype = "dotdash", color = "#3B3B3B", size = 0.5) +
+    geom_line( aes(x = tiempos, y = esp(tiempos, datos[1], alpha, r_eq) ),
+                  color = "gray70", linetype = "dotdash", size = 0.3 ) +
+    labs(title = "Intervalos de confianza, media y mediana Monte Carlo",
+          x = "Tiempo", y = "Valor") +
+    scale_color_manual(values = c("lim_inf" = "#8B3A3A", "lim_sup" = "#8B3A3A", 
+                                "lim_inf2" = "#EECBAD", "lim_sup2" = "#EECBAD",
+                                "mediana" = "#C6E2FF", "media" = "#00FF7F"  )) +
+    dark_theme_gray() +
+    theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = "right"  )   
+    
+    return(list(estadisticas = jugo, grafica = g))
+}
+```
+
+Su intervalo de confianza, media y mediana se ven:
+
+```{r}
+y <- estadisticas(datos,tiempos)
+y$grafica
+```
+
+
+
+

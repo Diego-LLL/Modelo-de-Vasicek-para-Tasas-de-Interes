@@ -1,0 +1,1142 @@
+---
+title: "Estimacion de Parametros"
+author: "Diego"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+subtitle: "del modelo de Ornstein - Uhlenbeck"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+# Librerias
+library(dplyr)
+library(knitr)
+# Para las graficas y los colores
+library(ggplot2)
+library(paletteer)
+if (!requireNamespace("ggsci", quietly = TRUE)) install.packages("ggsci")
+library(ggsci)
+library(ggdark)
+library(patchwork)
+# Paletas
+paleta_1 <- "ggsci::default_nejm"
+```
+
+
+El objetivo es poder utilizar este modelo para simular trayectorias futuras para observaciones de datos reales y poder usar el modelo para valuar activos como bonos a corto plazo. Al trabajar con datos reales, surgen inmediatamente 2 retos:
+
+  1.     Determinar como vamos a estimar los parametros del modelo
+
+  2.     Asegurarnos de que podemos confiar en nuestra estimacion de parametros
+
+El segundo punto es muy importante, ya que como los parametros verdaderos seran desconocidos, si la estimacion es mala y proseguimos el analisis asumiendola como buena, toda conclusion sera potencialmente errada. 
+
+Hacemos enfasis en ello, porque la expresion de la verosimilitud del modelo es altamente compleja y el camino usual de: 
+
+-   Derivar la log-verosimilitud con respecto a todos los parametros
+
+-   Evaluar cada derivada a 0
+
+-   Resolver el sistema de ecuaciones resultante 
+
+No lleva a nada en este caso o requiere un analisis extenso de dicho sistema de ecuaciones resultante y una buena cantidad de tiempo para invertir. En su lugar, utilizaremos **simulacion estocastica** para maximizar la log-verosimilitud tratandola como simplemente una funcion objetivo a maximizar en el espacio parametral de nuestros 3 parametros: \( (\mu, \alpha, \sigma) \in \mathbb{R}^3\) . Mas concretamente, el espacio parametral matematicamente es:
+
+$$
+\mathbb{R} \, \times \,\mathbb{R}^+ \times \,\mathbb{R}^+
+$$
+
+aunque financieramente, tendria sentido que fuese \( {(\mathbb{R}^+)}^3 \). En cualquier caso, no es un espacio parametral sencillo y se vera que la expresion de la log verosimilitud tampoco lo es. 
+
+El metodo de Simulacion Estocastica que utilizaremos sera **Simulated Annealing**
+
+## Log Verosimilitud
+
+En una primera instancia, la primer idea acerca de como plantear la log verosimilitud pudiese ser partir de la expresion \( r_t \sim N(\mu_t, \sigma_t^2) \) y comenzar escribiendo la log verosimilitud para una muestra de la distribucion normal y luego sustituir las expresiones \(\mu_t\) y \(sigma_t^2\). Sin embargo esto no puede hacerse asi directamente ya que estariamos violando una hipotesis importante en ese planteamiento que es que **la muestra debe ser iid** y en este caso la muestra no es independiente, ya que, en terminos simples: *el proceso \(X_{t+ \Delta t}\) (al tiempo t) tiene una dependencia obvia de \(X_{t}\). 
+
+Para manejar correctamente esta dependencia, usamos la estructura de la muestra de datos reales entorno a la cual buscamos definir la log verosimilitud. Recordemos que cada entrada i de los datos representa el proceso a tiempo \(t_i\) y que entre cualquier tiempo y el siguiente existe la misma distancia de paso: \(\Delta t\). Por ello aprovechamos esa estructura de los datos y la propiedad de homogeneidad en el tiempo del proceso para definir la log verosimilitud partiendo de la idea de la misma expresion que usamos para la simulacion de las trayectorias, que era:
+
+$$
+X_{t} \, = \, \mu_{t} + \sigma_{t} \, Z_{t}
+$$
+
+A partir de ahora, usaremos la parametrizacion del modelo de Ornstein Uhlenbeck en el campo de las finanzas, que como ya habiamos mencionado toma el nombre de **Modelo de Vasicek**. Asi, ahora escribimos \(r_e\) en lugar de \(\mu\), quedando la expresion de \(\mu_t\) ahora escrita asi:
+
+$$
+\mu_{t} \, = \, r_e + (X_{t-1} - r_e)\,e^{-\alpha \,\Delta t} 
+$$
+
+La expresion de \(\sigma_t\) no cambia:
+
+$$
+\sigma_{t} \, = \, \sigma \, \sqrt{\frac{1-e^{-2\alpha \, \Delta t}}{2 \alpha}} 
+$$
+
+Asi, podemos calcular correctamente la funcion de verosimilitud \(L(\theta)\)
+
+
+$$
+L(\alpha,r_e, \sigma)\, = \, L(\theta)\, = \, f(x_0,x_1,...,x_n\, ; \theta) \, = 
+\, f(x_0;\theta) \, \prod_{t=2}^{n}{ \frac{1}{\sqrt{2 \pi \, \sigma_t^2}} exp\biggm(-\,\frac{(x_t-\mu_t)^2}{2\sigma_t^2}\biggm)  }
+$$
+
+en donde \(\mu_t\) y \(\sigma_t^2\) son las expresiones justo antes desarrolladas. Como el objetivo es maximizar, podemos de una vez despreciar la constante  \( f(x_0;\theta) \) .Observese que podria ahi sustituirse estas expresiones en la expresion completa de \(L(\theta)\) pero realmente no ganamos nada, mas que terminar con una expresion larguisima y abrumadora de la verosimilitud, que despues habra que seguir manipulando y arrastrando 
+
+Ahora, aplicando logaritmo, la log verosimilitud \(\mathcal{L}(\theta)\) es:
+
+$$
+\mathcal{L}(\alpha,r_e, \sigma) \, = \, \mathcal{L}(\theta) \,= \, log(L(\alpha,r_e, \sigma)\,) = 
+\sum_{t=2}^{n}{ log\biggm(\frac{1}{\sqrt{2 \pi \, \sigma_t^2}} exp\biggm(-\,\frac{(x_t-\mu_t)^2}{2\sigma_t^2}\biggm)\,\, \biggm)  } \,=
+$$
+
+$$
+\sum_{t=2}^{n}{ log\biggm(\frac{1}{\sqrt{2 \pi}} \biggm) + \,log \biggm( \frac{1}{\sqrt{\sigma_t^2}} \biggm) \, + \, log \biggm( exp\biggm(-\,\frac{(x_t-\mu_t)^2}{2\sigma_t^2}\biggm)\,\, \biggm)  } \,=    
+$$
+
+$$
+\sum_{t=2}^n{  log\biggm(\,(2 \pi)^{-\frac{1}{2}}\,\biggm) + \,log\biggm(\,(\sigma_t^2)^{-\frac{1}{2}}\,\biggm) \,  - \, \biggm(\frac{(x_t-\mu_t)^2}{2\sigma_t^2} \biggm)\,  }
+$$
+
+Por lo tanto, la expresion de la log verosimilitud con la que trabajaremos es:
+
+$$
+\mathcal{L}(\alpha,r_e, \sigma) \, = \, \mathcal{L}(\theta) \, = \,-\,\frac{n}{2}\,log(2\pi) + \sum_{t=2}^n{ -log(\sigma_t)  \, - \, \frac{1}{2} \biggm( \frac{x_t-\mu_t}{\sigma_t} \biggm)^2 }
+$$
+
+```{r log verosimilitud, echo=TRUE}
+# datos debe ser un vector
+log_verosimilitud <- function(theta, datos, dt){
+  
+  alpha <- theta[1]
+  r_e   <- theta[2]
+  sigma <- theta[3]
+  r <- datos
+  
+  # alpha y sigma deben ser positivos (no pueden ni siquiera ser 0 o logL(theta) se indetermina)
+  if (is.na(alpha) || is.na(sigma) || alpha <= 0 || sigma <= 0)    return(-1000)
+  n <- length(datos) - 1     # porque en cada iteracion usaremos el indice i y i+1
+  logL <- - n/2 * log(2*pi)    # inicializo en los terminos que no dependen del indice t
+  
+  for(t in 2:n){
+    mu_t <- r_e + ( r[t-1] - r_e ) * exp(-alpha*dt)
+    sigma_t <- sigma * sqrt( (1-exp(-2*alpha*dt)) / (2*alpha) )
+    logL <- logL - log(sigma_t) - 1/2 * ( (r[t]-mu_t) / sigma_t )^2         # voy acumulando
+  }
+return(logL)  
+}
+```
+
+## Simulated Annealing
+
+Ya con una expresion de la log verosimilitud, no es muy dificil darse cuenta de que el sistema de ecuaciones de las derivadas igualadas a 0 va a terminar siendo algo no lineal en el que el estimador maximo verosimil de cada uno de los parametos quedara en terminos no lineales (y dificiles o imposibles de despejar) de los otros parametros. Con solo una excepcion: El EMV de: \( r_e \) que queda en terminos de \( \alpha \). Esto lo retomaremos mas adelante, por ahora planteamos el algoritmo de **Simulated Annealing** de forma directa para maximizar la log verosimilitud:
+
+```{r, echo=TRUE}
+simulated_annealing_vasicek <- function( theta_0, datos, dt, freno){
+  
+  # Inicializo una variable que va a ir conservando solo los mejores conjuntos de parametros 
+  # para theta. Recordemos que theta = ( alpha, r_e, sigma )
+  theta_actual <- theta_0
+  logL_actual <- log_verosimilitud(theta_0,datos,dt)
+  # parametros para modificar la escala de las distribuciones de propuesta de cada parametro de theta
+  c1 <- 0.1
+  #c2 <- 0.01
+  c2 <- 0.004
+  c3 <- 0.005
+  # Creo una matriz para guardar los parametros y la log verosimilitud
+  recorrido <- matrix(0,freno,4)
+  colnames(recorrido) <- c("alpha","r_e","sigma","logL")
+  recorrido[1,] <- c(theta_actual,logL_actual)
+  
+  # Comienza el Simulated Annealing
+  for(i in 2:freno){
+    #Temp <- 100/log(2*i)
+    Temp <- 10/i
+    # Simulo de theta propuesta de las distribuciones de propuesta
+    alpha <- rnorm(1,theta_actual[1],c1)
+    r_e   <- rnorm(1,theta_actual[2],c2)
+    sigma <- rnorm(1,theta_actual[3],c3)
+    theta_prop <- c(alpha,r_e,sigma)
+    logL_prop <- log_verosimilitud(theta_prop,datos,dt)
+    # Calculamos la probabilidad rho de aceptar el nuevo valor
+    rho <- min(  exp( (logL_prop - logL_actual)/Temp ), 1  )
+    if( runif(1) < rho ) {
+        theta_actual <- theta_prop
+        logL_actual <- logL_prop
+    }  
+    recorrido[i,] <- c(theta_actual,logL_actual)
+  } 
+  return(recorrido)
+}
+```
+
+```{r ornstein - uhlenbeck, echo = FALSE}
+# (mu, alpha, sigma) :  Son los parametros del modelo
+#                 X0 :  Es simplemente la condicion inicial de la trayectoria en tiempo t0 = 0
+#                 tf :  Controla hasta que punto en el tiempo se van a simular las trayectorias
+#                  m :  Es el numero de trayectorias que simularemos simultaneamente
+
+ornstein_uhlenbeck <- function( mu, alpha, sigma, X0, tf, dt, m) {
+  
+  tiempos <- seq(0, tf, by = dt)        # Discretización del tiempo entre 0 y t_f
+  n <- length(tiempos)                  # Queda definido n : el numero de pasos
+  # Matriz para almacenar las trayectorias, n pasos x m trayectorias
+  trayectorias <- matrix(0, nrow = n, ncol = m)
+  trayectorias[1, ] <- X0               # A tiempo 0, todas inician en la condicion inicial X_0
+  
+  for (i in 2:n) {
+    # Para no sobrecargar la notacion calculamos primero la media y la desviacion estandar del paso
+    mu_t <- mu + (trayectorias[i-1, ] - mu) * exp(- alpha * dt)
+    sigma_t <- sigma * sqrt((1 - exp(-2 * alpha * dt)) / (2 * alpha))
+    # Con ellas, hacemos una simulacion montecarlo para el i-esimo paso de todas las trayectorias
+    trayectorias[i, ] <- mu_t + sigma_t * rnorm(m, 0, 1)
+  }
+  return(list(tiempos = tiempos, trayectorias = trayectorias))
+}
+```
+
+Ahora, probemos nuestro Simulated Annealing para ir evaluando ¿que tan bueno es? o ¿que tan malo es?
+
+#### Experimento i
+
+Tomemos la siguiente trayectoria simulada que corresponderian a datos observados por 3 semanas, 3 veces al dia:
+
+-   \(t_f = 21\), 
+
+-   \(\Delta t = \frac{1}{3} \),
+
+-   \(r_0 = 0.12\),
+
+-   \(\theta \, = \, (\, \alpha, \, r_e, \, \sigma\, ) \, = \, (\, 0.30,\,0.20,\,0.08\,)  \)
+
+```{r}
+# para reducir el codigo, haremos una funcion para graficar las trayectorias de la funcion ornstein_uhlenbeck.
+# Observese que esta funcion simula y grafica a la vez
+graficar_trayectorias<-function(alpha,r_eq,sigma,r0,tf,dt,m,semilla){
+  
+  set.seed(semilla)
+  simulacion <- ornstein_uhlenbeck(mu = r_eq,alpha,sigma,r0,tf,dt,m)
+
+  datos_largos <- lapply(1:m, function(i) {
+                              data.frame(
+                                    Trayectoria = i,
+                                    Tiempo = simulacion$tiempo,
+                                    Tasa = simulacion$trayectorias[, i]   )
+                }) %>% do.call(rbind, . )
+
+  # Ahora si a graficar (:
+  g <- ggplot( datos_largos, aes(x = Tiempo, y = Tasa, color = factor(Trayectoria) )  ) +
+      geom_line(linewidth = 0.5, color="#CD3333") +
+      geom_hline(yintercept = 0, linetype = "dotdash", color = "#3B3B3B", size = 0.5) +
+      geom_hline(yintercept = r_eq, linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.25) +
+      ylim(c(-0.20,0.65)) +
+      labs(   title = "Datos simulados bajo el modelo de Vasicek",
+          x = "Tiempo", y = "Tasa", color = "Trayectoria"   ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5),
+              legend.position = "bottom"  ) 
+  
+  return(list(datos = simulacion$trayectorias, graficas = g))
+}
+```
+
+```{r , fig.align='center', fig.width=5, fig.height=3}
+semilla = 48
+tf = 21                        
+m = 1                           
+dt = 1/3                         
+r0 = 0.12
+alpha = 0.3
+r_eq = 0.2                      
+sigma = 0.08
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+x$graficas
+```
+
+Tras realizar 4000 iteraciones del Simulated Annealing, los parametros que estimo el algoritmo son: 
+
+```{r}
+# Del mismo modo, crearemos una funcion para mostrar los resultados del simulated annealing.
+est_simulated_annealing <- function(datos, dt, freno){
+  
+  # Inicializacion
+  alpha = (mean(datos)/sd(datos)-1)/2
+  r_eq = mean(datos)
+  sigma = sd(datos)
+  
+  # Simulated Annealing
+  result <- simulated_annealing_vasicek( c(alpha,r_eq,sigma), datos, dt, freno )
+  # la ultima iteracion del algoritmo contiene los parametros que encontro en las columnas 1:3
+  # en la ultima viene la log verosimilitud maximizada
+  
+  # Resultados del Simulated Annealing
+  round(result[freno,],4)
+  resultados <- data.frame( alpha = result[freno,1], r_e = result[freno,2], sigma = result[freno,3],
+                            logL = result[freno,4] )
+  row.names(resultados) <- paste("iteraciones: ",freno)
+  
+  # Graficar el recorrido del algoritmo
+  recorrido <- data.frame( iteracion = 1:freno, alpha = result[,1], r_e = result[,2], 
+                         sigma = result[,3], logL = result[,4])
+  # Para agilizar la graficacion, reducire el data frame recorrido, conservando 1 renglon cada 4
+  recorrido <- recorrido[seq(1, freno, by = 4), ]
+  
+  g_a <- ggplot( recorrido, aes(x = iteracion, y = logL )  ) +
+      geom_line(linewidth = 0.5, color="#F0F0F0") +
+      labs(   title = "Evolucion de la log-verosimilitud", x = "Iteracion", y = "LogL" ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5), legend.position = "bottom"  ) 
+
+  g_b <- ggplot( recorrido, aes(x = iteracion, y = alpha )  ) +
+      geom_line(linewidth = 0.5, color="#4EEE94") +
+      geom_hline(yintercept = result[freno,1], linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.15) +
+      labs(   title = "Evolucion de alpha", x = "Iteracion", y = "alpha estimado" ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5), legend.position = "bottom"  )
+
+  g_c <- ggplot( recorrido, aes(x = iteracion, y = r_e )  ) +
+      geom_line(linewidth = 0.5, color="#EEC900") +
+      geom_hline(yintercept = result[freno,2], linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.15) +
+      labs(   title = "Evolucion de r_e", x = "Iteracion", y = "r_e estimado" ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5), legend.position = "bottom"  )
+
+  g_d <- ggplot( recorrido, aes(x = iteracion, y = sigma )  ) +
+      geom_line(linewidth = 0.5, color="#EEAEEE") +
+      geom_hline(yintercept = result[freno,3], linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.15) +
+      labs(   title = "Evolucion de sigma", x = "Iteracion", y = "sigma estimado" ) +
+      dark_theme_gray() +
+      theme(  plot.title = element_text(hjust = 0.5), legend.position = "bottom"  )
+
+  design <- "
+    12
+    34  "
+
+  g <- g_a + g_b + g_c + g_d + plot_layout(design = design)
+  
+  return(list(resultados = resultados, graficas = g))
+}
+# La funcion arroja una lista de 2 cosas: Los resultados y Graficas del recorrido del algoritmo
+```
+
+```{r, include = FALSE}
+freno = 4000
+y <- est_simulated_annealing(datos, dt, freno)
+```
+
+```{r fig.align='center', fig.width=7, fig.height=5}
+y$resultados
+y$graficas
+```
+
+
+
+Vemos como los parametros \( r_e, \, \sigma \) los estimo muy bien. \( \alpha \) no lo estima estrepitosamente mal considerando lo subjetivo que es este parametro desde su interpretacion financiera: una "velocidad" en la que el proceso volvera a \( r_e \) conforme t crezca.
+
+Es importante observar que estamos estimando los parametros de una trayectoria con un horizonte temporal bastante corto, con 3 observaciones diarias. Por lo que es entendible que quiza el algoritmo no tuvo "suficientes" datos para estimar mejor.
+
+Ahora otro experimento, a ver como se comporta el algoritmo cuando ampliamos el horizonte temporal y el tamaño del paso tambien. Son los mismos parametros, pero ahora en un horizonte temporal de 2 meses (61 dias) y una observacion diaria: 
+
+-   \(t_f = 60\), 
+
+-   \(\Delta t = 1\),
+
+-   \(r_0 = 0.12\),
+
+-   \(\theta \, = \, (\, \alpha, \, r_e, \, \sigma\, ) \, = \, (\, 0.30,\,0.20,\,0.08\,)  \)
+
+
+```{r , fig.align='center', fig.width=5, fig.height=3}
+semilla = 48
+tf = 60                        
+m = 1                           
+dt = 1                         
+r0 = 0.12
+alpha = 0.3
+r_eq = 0.2                      
+sigma = 0.08
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+x$graficas
+```
+
+Tras realizar 4000 iteraciones, los estimadores puntuales que arroja el metodo son:
+
+```{r, include = FALSE}
+freno = 4000
+y <- est_simulated_annealing(datos, dt, freno)
+```
+
+```{r fig.align='center', fig.width=7, fig.height=5}
+y$resultados
+y$graficas
+```
+
+Vemos como, los parametros que ya estimaba muy bien el algoritmo los sigue estimando muy bien. Y el otro parametro (\( \alpha \)) ahora ya lo estima bien.
+
+Ahora probemos el mismo experimento con un horizonte temporal aun mas grande: de medio año aproximadamente, manteniendo el tamaño de paso diario
+
+
+-   \(t_f = 182\), 
+
+-   \(\Delta t = 1\),
+
+-   \(r_0 = 0.12\),
+
+-   \(\theta \, = \, (\, \alpha, \, r_e, \, \sigma\, ) \, = \, (\, 0.30,\,0.20,\,0.08\,)  \)
+
+```{r , fig.align='center', fig.width=5, fig.height=3}
+semilla = 48
+tf = 180                        
+m = 1                           
+dt = 1                         
+r0 = 0.12
+alpha = 0.3
+r_eq = 0.2                      
+sigma = 0.08
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+x$graficas
+```
+
+```{r, include = FALSE}
+freno = 4000
+y <- est_simulated_annealing(datos, dt, freno)
+```
+
+```{r fig.align='center', fig.width=7, fig.height=5}
+y$resultados
+y$graficas
+```
+
+
+Parece que cuando el horizonte temporal es grande, los resultados del algoritmo son **altamenta satisfactorios**
+
+
+Ahora, hagamos otro experimento ahora con un horizonte temporal grande (el mismo de medio año) pero un tamaño de paso muy pequeño 1/12, i.e una observacion cada 2 horas. Observese que eso significa tener \(180 \cdot 12 = 2160\) puntos simulados de la trayectoria. ¿Una cantidad de datos tan grande provocara malas estimaciones?
+
+-   \(t_f = 180\), 
+
+-   \(\Delta t = \frac{1}{12}\),
+
+-   \(r_0 = 0.12\),
+
+-   \(\theta \, = \, (\, \alpha, \, r_e, \, \sigma\, ) \, = \, (\, 0.30,\,0.20,\,0.08\,)  \)
+
+```{r , fig.align='center', fig.width=5, fig.height=3}
+semilla = 48
+tf = 180                        
+m = 1                           
+dt = 1/12                         
+r0 = 0.12
+alpha = 0.3
+r_eq = 0.2                      
+sigma = 0.08
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+x$graficas
+```
+
+```{r, include = FALSE}
+freno = 4000
+y <- est_simulated_annealing(datos, dt, freno)
+```
+
+```{r fig.align='center', fig.width=7, fig.height=5}
+y$resultados
+y$graficas
+```
+
+No! Persiste lo que veniamos observando: \(r_e, \sigma\) siguen estimandose con extraordinaria precision y \(\alpha\) se estima *"aceptablemente bien"*
+
+Realmente no hay una diferencia significativa con las estimaciones si se añaden 1000 iteraciones adicionales, no vale el costo computacional adicional
+
+```{r, include = FALSE}
+freno = 5000
+#y <- est_simulated_annealing(datos, dt, freno)
+```
+
+```{r fig.align='center', fig.width=7, fig.height=5}
+y$resultados
+y$graficas
+```
+
+#### Experimento ii
+
+Ahora: otra linea de experimentos: de vuelta a datos mensuales, pero con parametros mas dificiles de estimar , ya que la cadena tendera a visitar mas frecuentemente estados cercanos al 0
+
+-   \(t_f = 30\), 
+
+-   \(\Delta t = 1\),
+
+-   \(r_0 = 0.20\),
+
+-   \(\theta \, = \, (\, \alpha, \, r_e, \, \sigma\, ) \, = \, (\, 0.40,\,0.10,\,0.06\,)  \)
+
+```{r , fig.align='center', fig.width=5, fig.height=3}
+semilla = 48
+tf = 30                        
+m = 1                           
+dt = 1                         
+r0 = 0.20
+alpha = 0.4
+r_eq = 0.10                      
+sigma = 0.06
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+x$graficas
+```
+
+```{r, include = FALSE}
+freno = 5000
+#y <- est_simulated_annealing(datos, dt, freno)
+#y$resultados
+#y$graficas
+```
+
+
+Vemos que la estimacion no es tan precisa, aunque de nuevo, esto debido a que el algoritmo se puso a estimar con muy pocos datos. Aun asi, podemos de nuevo apreciar que \(\sigma\) lo estima bien, \(r_e\) lo estima masomenos bien y el que estima mal es \(\alpha\)
+
+
+¿Y si ahora aumentamos el horizonte temporal a 2 meses?
+
+-   \(t_f = 60\), 
+
+-   \(\Delta t = 1\),
+
+-   \(r_0 = 0.20\),
+
+-   \(\theta \, = \, (\, \alpha, \, r_e, \, \sigma\, ) \, = \, (\, 0.40,\,0.10,\,0.06\,)  \)
+
+```{r , fig.align='center', fig.width=5, fig.height=3}
+semilla = 48
+tf = 60                        
+m = 1                           
+dt = 1                         
+r0 = 0.20
+alpha = 0.4
+r_eq = 0.10                      
+sigma = 0.06
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+x$graficas
+```
+
+```{r, include = FALSE}
+freno = 4000
+y <- est_simulated_annealing(datos, dt, freno)
+```
+
+```{r fig.align='center', fig.width=7, fig.height=5}
+y$resultados
+y$graficas
+```
+
+Vemos como mejoramos de manera sustancial las 3 estimaciones, ahora las de \(r_e\) y \(\sigma\) son extraordinariamente buenas y \(\alpha\) mejoro al punto de que la podamos considerar *masomenos* buena
+
+¿Y si en lugar de aumentar el horizonte temporal, disminuimos el tamaño de paso?
+
+Ahora hagamos mas pequeño el tamaño de paso: a 2 observaciones por dia, a ver si mejoran las estimaciones
+
+-   \(t_f = 30\), 
+
+-   \(\Delta t = \frac{1}{2}\),
+
+-   \(r_0 = 0.20\),
+
+-   \(\theta \, = \, (\, \alpha, \, r_e, \, \sigma\, ) \, = \, (\, 0.40,\,0.10,\,0.06\,)  \)
+
+```{r , fig.align='center', fig.width=5, fig.height=3}
+semilla = 48
+tf = 30                        
+m = 1                           
+dt = 1/2                         
+r0 = 0.20
+alpha = 0.4
+r_eq = 0.10                      
+sigma = 0.06
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+x$graficas
+```
+
+```{r, include = FALSE}
+freno = 4000
+y <- est_simulated_annealing(datos, dt, freno)
+```
+
+```{r fig.align='center', fig.width=7, fig.height=5}
+y$resultados
+y$graficas
+```
+
+Vemos como de nuevo la estimacion mejoro con respecto a la que inicio este experimento.
+
+Ahora probemos ambas modificaciones: simular con un horizonte de 2 meses y con 2 observaciones por dia:
+
+-   \(t_f = 60\), 
+
+-   \(\Delta t = \frac{1}{2}\),
+
+-   \(r_0 = 0.20\),
+
+-   \(\theta \, = \, (\, \alpha, \, r_e, \, \sigma\, ) \, = \, (\, 0.40,\,0.10,\,0.06\,)  \)
+
+```{r , fig.align='center', fig.width=5, fig.height=3}
+semilla = 48
+tf = 60                        
+m = 1                           
+dt = 1/2                         
+r0 = 0.20
+alpha = 0.4
+r_eq = 0.10                      
+sigma = 0.06
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+x$graficas
+```
+
+```{r, include = FALSE}
+freno = 4000
+y <- est_simulated_annealing(datos, dt, freno)
+```
+
+```{r fig.align='center', fig.width=7, fig.height=5}
+y$resultados
+y$graficas
+```
+
+La estimacion ahora es extraordinariamente buena
+
+¿Perderemos consistencia si aumentamos de 2 meses a 3 meses mantendiendo las 2 observaciones por dia?
+
+-   \(t_f = 90\), 
+
+-   \(\Delta t = \frac{1}{2}\),
+
+-   \(r_0 = 0.20\),
+
+-   \(\theta \, = \, (\, \alpha, \, r_e, \, \sigma\, ) \, = \, (\, 0.40,\,0.10,\,0.06\,)  \)
+
+```{r , fig.align='center', fig.width=5, fig.height=3}
+semilla = 48
+tf = 90                        
+m = 1                           
+dt = 1/2                         
+r0 = 0.20
+alpha = 0.4
+r_eq = 0.10                      
+sigma = 0.06
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+x$graficas
+```
+
+```{r, include = FALSE}
+freno = 4000
+y <- est_simulated_annealing(datos, dt, freno)
+```
+
+```{r fig.align='center', fig.width=7, fig.height=5}
+y$resultados
+y$graficas
+```
+
+**¡No! Incluso mejoro un poco mas!**
+
+#### Experimento iii
+
+Probemos un experimento mas, ahora con un valor mucho mas alto para \(\alpha\)
+
+-   \(t_f = 60\), 
+
+-   \(\Delta t = 1\),
+
+-   \(r_0 = 0.20\),
+
+-   \(\theta \, = \, (\, \alpha, \, r_e, \, \sigma\, ) \, = \, (\, 0.90,\,0.15,\,0.11\,)  \)
+
+```{r , fig.align='center', fig.width=5, fig.height=3}
+semilla = 48
+tf = 60                        
+m = 1                           
+dt = 1                         
+r0 = 0.10
+alpha = 0.9
+r_eq = 0.15                      
+sigma = 0.11
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+x$graficas
+```
+
+```{r, include = FALSE}
+freno = 4000
+y <- est_simulated_annealing(datos, dt, freno)
+```
+
+```{r fig.align='center', fig.width=7, fig.height=5}
+y$resultados
+y$graficas
+```
+¡Una estimacion muy buena! Ahora disminuyendo a la mitad el tamaño de paso a ver si se mantiene la eficacia de las estimaciones
+
+-   \(t_f = 60\), 
+
+-   \(\Delta t = 1\),
+
+-   \(r_0 = 0.20\),
+
+-   \(\theta \, = \, (\, \alpha, \, r_e, \, \sigma\, ) \, = \, (\, 0.90,\,0.15,\,0.11\,)  \)
+
+```{r , fig.align='center', fig.width=5, fig.height=3}
+semilla = 48
+tf = 60                        
+m = 1                           
+dt = 1/2                         
+r0 = 0.1
+alpha = 0.9
+r_eq = 0.15                      
+sigma = 0.11
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+x$graficas
+```
+
+```{r, include = FALSE}
+freno = 4000
+y <- est_simulated_annealing(datos, dt, freno)
+```
+
+```{r fig.align='center', fig.width=7, fig.height=5}
+y$resultados
+y$graficas
+```
+
+Las estimaciones son similarmente tan buenas como las anteriores
+
+#### Experimento iv
+
+Ahora un experimento con un valor especialmente grande para otro valor para \(\sigma\), iniciando en un horizonte temporal de 1 mes y medio con observaciones diarias. Y despues 2 meses y medio.
+
+-   \(t_f = 45\), 
+
+-   \(\Delta t = 1\),
+
+-   \(r_0 = 0.20\),
+
+-   \(\theta \, = \, (\, \alpha, \, r_e, \, \sigma\, ) \, = \, (\, 0.75,\,0.14,\,0.20\,)  \)
+
+```{r , fig.align='center', fig.width=5, fig.height=3}
+semilla = 48
+tf = 45                        
+m = 1                           
+dt = 1                         
+r0 = 0.19
+alpha = 0.75
+r_eq = 0.14                      
+sigma = 0.20
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+x$graficas
+```
+
+```{r, include = FALSE}
+freno = 4000
+y <- est_simulated_annealing(datos, dt, freno)
+```
+
+```{r fig.align='center', fig.width=7, fig.height=5}
+y$resultados
+y$graficas
+```
+
+La estimacion es bastante buena. 
+
+-   \(t_f = 75\), 
+
+-   \(\Delta t = 1\),
+
+-   \(r_0 = 0.20\),
+
+-   \(\theta \, = \, (\, \alpha, \, r_e, \, \sigma\, ) \, = \, (\, 0.75,\,0.14,\,0.20\,)  \)
+
+```{r , fig.align='center', fig.width=5, fig.height=3}
+semilla = 48
+tf = 75                        
+m = 1                           
+dt = 1                        
+r0 = 0.19
+alpha = 0.75
+r_eq = 0.14                      
+sigma = 0.20
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+x$graficas
+```
+
+```{r, include = FALSE}
+freno = 4000
+y <- est_simulated_annealing(datos, dt, freno)
+```
+
+```{r fig.align='center', fig.width=7, fig.height=5}
+y$resultados
+y$graficas
+```
+
+Las estimaciones para \(r_e\) y \(\sigma\) son *extraordinariamente buenas!**, la de \(\alpha\) se alejo un poco de la real pero apesar de esto, no podria decirse que es muy mala. Mantengamos la temporalidad y disminuyamos a la mitad el tamaño de paso:
+
+-   \(t_f = 75\), 
+
+-   \(\Delta t = \frac{1}{2} \),
+
+-   \(r_0 = 0.20\),
+
+-   \(\theta \, = \, (\, \alpha, \, r_e, \, \sigma\, ) \, = \, (\, 0.75,\,0.14,\,0.20\,)  \)
+
+```{r , fig.align='center', fig.width=5, fig.height=3}
+semilla = 48
+tf = 75                        
+m = 1                           
+dt = 1/2                         
+r0 = 0.19
+alpha = 0.75
+r_eq = 0.14                      
+sigma = 0.20
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+x$graficas
+```
+
+Vemos como trabajar con un valor tan alto de \(\sigma\) tiene un efecto muy notorio en la dispersion del proceso. Las estimaciones del algoritmo son:
+
+```{r, include = FALSE}
+freno = 4000
+y <- est_simulated_annealing(datos, dt, freno)
+```
+
+```{r fig.align='center', fig.width=7, fig.height=5}
+y$resultados
+y$graficas
+```
+
+De nuevo, espectacularmente buenas.
+
+#### Experimento v
+
+Por ultimo probemos ¿como se comporta el algoritmo con trayectorias con una cantidad realmente muy grande de datos, iniciemos planteando una trayectoria a 1 mes, con observaciones cada 2 horas
+
+-   \(t_f = 30\), 
+
+-   \(\Delta t = \frac{1}{24} \),
+
+-   \(r_0 = 0.111\),
+
+-   \(\theta \, = \, (\, \alpha, \, r_e, \, \sigma\, ) \, = \, (\, 0.65,\,0.20,\,0.10\,)  \)
+
+```{r , fig.align='center', fig.width=5, fig.height=3}
+semilla = 48
+tf = 30                        
+m = 1                           
+dt = 1/12                        
+r0 = 0.111
+alpha = 0.60
+r_eq = 0.20                      
+sigma = 0.10
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+x$graficas
+```
+
+```{r, include = FALSE}
+freno = 4000
+y <- est_simulated_annealing(datos, dt, freno)
+```
+
+```{r fig.align='center', fig.width=7, fig.height=5}
+y$resultados
+y$graficas
+```
+Tal como en los experimentos anteriores, la estimacion para \(r_e\) y \(\sigma\) es extraordinariamente buena. La de \(\alpha\) no mucho. En los experimentos anteriores, cuando incrementamos el horizonte temporal, o cuando reducimos el tamaño de paso: las cosas mejoran. Hagamos el mismo experimento pero con observaciones cada 30 minutos
+
+-   \(t_f = 30\), 
+
+-   \(\Delta t = \frac{1}{48} \),
+
+-   \(r_0 = 0.111\),
+
+-   \(\theta \, = \, (\, \alpha, \, r_e, \, \sigma\, ) \, = \, (\, 0.60,\,0.20,\,0.10\,)  \)
+
+```{r , fig.align='center', fig.width=5, fig.height=3}
+semilla = 48
+tf = 30                        
+m = 1                           
+dt = 1/48                        
+r0 = 0.111
+alpha = 0.60
+r_eq = 0.20                      
+sigma = 0.10
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+x$graficas
+```
+
+```{r, include = FALSE}
+freno = 4000
+y <- est_simulated_annealing(datos, dt, freno)
+```
+
+```{r fig.align='center', fig.width=7, fig.height=5}
+y$resultados
+y$graficas
+```
+
+Ahora es incriblemente buena la estimacion de los 3 parametros. Veamos que hubiese pasado 
+
+-   \(t_f = 30\), 
+
+-   \(\Delta t = \frac{1}{48} \),
+
+-   \(r_0 = 0.111\),
+
+-   \(\theta \, = \, (\, \alpha, \, r_e, \, \sigma\, ) \, = \, (\, 0.65,\,0.20,\,0.10\,)  \)
+
+```{r , fig.align='center', fig.width=5, fig.height=3}
+semilla = 48
+tf = 60                        
+m = 1                           
+dt = 1/24                        
+r0 = 0.111
+alpha = 0.60
+r_eq = 0.20                      
+sigma = 0.10
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+x$graficas
+```
+
+```{r, include = FALSE}
+freno = 4000
+y <- est_simulated_annealing(datos, dt, freno)
+```
+
+```{r fig.align='center', fig.width=7, fig.height=5}
+y$resultados
+y$graficas
+```
+
+La estimacion es magnifica, casi perfecta. Concluyamos esta etapa de experimentos llevando esta idea cerca del extremo: con observaciones cada 15 minutos para analizar si tal volumen de datos (7200 observaciones) puede llegar a afectar la precision de las estimaciones en lugar de mejorarlas, ya que tal "cantidad" de aleatoriedad podria tener un impacto.
+
+-   \(t_f = 90\), 
+
+-   \(\Delta t = \frac{1}{96} \),
+
+-   \(r_0 = 0.111\),
+
+-   \(\theta \, = \, (\, \alpha, \, r_e, \, \sigma\, ) \, = \, (\, 0.65,\,0.20,\,0.10\,)  \)
+
+```{r , fig.align='center', fig.width=5, fig.height=3}
+semilla = 48
+tf = 75                        
+m = 1                           
+dt = 1/96                        
+r0 = 0.111
+alpha = 0.60
+r_eq = 0.20                      
+sigma = 0.10
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+x$graficas
+```
+
+```{r, include = FALSE}
+freno = 4000
+y <- est_simulated_annealing(datos, dt, freno)
+```
+
+```{r fig.align='center', fig.width=7, fig.height=5}
+y$resultados
+y$graficas
+```
+
+Las estimaciones siguen siendo: extraordinariamente buena para \(\sigma\), muy buena para \(r_e\) y aceptable para \(\alpha\)
+
+#### Experimento vi
+
+Como experimento adicional, probemoslo para un valor muy pequeño para \(\alpha\)
+
+-   \(t_f = 60\), 
+
+-   \(\Delta t = 1\),
+
+-   \(r_0 = 0.06\),
+
+-   \(\theta \, = \, (\, \alpha, \, r_e, \, \sigma\, ) \, = \, (\, 0.16,\,0.13,\,0.09\,)  \)
+
+```{r , fig.align='center', fig.width=5, fig.height=3}
+semilla = 48
+tf = 60                        
+m = 1                           
+dt = 1                         
+r0 = 0.06
+alpha = 0.16
+r_eq = 0.13                      
+sigma = 0.09
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+x$graficas
+```
+
+```{r, include = FALSE}
+freno = 4000
+y <- est_simulated_annealing(datos, dt, freno)
+```
+
+```{r fig.align='center', fig.width=7, fig.height=5}
+y$resultados
+y$graficas
+```
+
+La estimacion es extraordinariamente buena. Ahora observaciones mensuales con un tamaño de paso pequeño
+
+
+-   \(t_f = 182\), 
+
+-   \(\Delta t = 1 \),
+
+-   \(r_0 = 0.06\),
+
+-   \(\theta \, = \, (\, \alpha, \, r_e, \, \sigma\, ) \, = \, (\, 0.16,\,0.13,\,0.09\,)  \)
+
+```{r , fig.align='center', fig.width=5, fig.height=3}
+semilla = 48
+tf = 182                        
+m = 1                           
+dt = 1                         
+r0 = 0.06
+alpha = 0.16
+r_eq = 0.13                      
+sigma = 0.09
+
+x<-graficar_trayectorias(alpha,r_eq,sigma,r0,tf,dt,m,semilla)
+datos <- x$datos
+x$graficas
+```
+
+```{r, include = FALSE}
+freno = 4000
+y <- est_simulated_annealing(datos, dt, freno)
+```
+
+```{r fig.align='center', fig.width=7, fig.height=5}
+y$resultados
+y$graficas
+```
+
+Las estimaciones son realmente muy buenas. Parece que con valores altos de \(\alpha\) es en donde es mas dificil de estimar. Esto se debe al valor esperado del proceso \( {r_t} \):
+
+Recordemos que cuando resolvimos la EDE, habiamos llegado a esta expresion *(a tiempo continuo, sin discretizar)* de la distribucion de la solucion exacta:
+
+$$
+r_t \, \sim \, \mathbb{N}( \, \mu_t, \, \sigma_t^2 \,)
+$$
+por lo que tomando esperanza y sustituyendo por la expresion de \(\mu_t\):
+
+$$
+\mathbb{E}[\, r_t \,] \, = \, \mathbb{E}[\, \mu_t \,] = \mathbb{E}[\, \mu_t \,] \, = \, r_e \, + \, (r_0 \, - \, r_e) \, e^{-\alpha \, t}
+$$
+
+Lo cual es una funcion deterministica del tiempo y se ve asi *(para \(r_e = 0.15\))*
+
+```{r, fig.width=10, fig.height=6}
+tiempos <- seq(from = 0, to = 60, by = 1/100)
+
+esp<-function(t,x_0,alpha,r_eq)  return( r_eq + (x_0 - r_eq)*exp(-alpha*t)  )
+r_eq <- 0.15
+
+graficable <- data.frame(tiempos, 
+                Esperanza_1.0 = esp(tiempos,datos[1],1,r_eq),         
+                Esperanza_0.90 = esp(tiempos,datos[1],0.90,r_eq),
+                Esperanza_0.80 = esp(tiempos,datos[1],0.80,r_eq),
+                Esperanza_0.65 = esp(tiempos,datos[1],0.65,r_eq),
+                Esperanza_0.50 = esp(tiempos,datos[1],0.50,r_eq),
+                Esperanza_0.35 = esp(tiempos,datos[1],0.35,r_eq),
+                Esperanza_0.20 = esp(tiempos,datos[1],0.20,r_eq),
+                Esperanza_0.10 = esp(tiempos,datos[1],0.10,r_eq) ) 
+
+graficable_largo <- graficable %>%
+  tidyr::pivot_longer(cols = c(Esperanza_1.0,Esperanza_0.90,Esperanza_0.80,Esperanza_0.65,
+                               Esperanza_0.50,Esperanza_0.35,Esperanza_0.20,Esperanza_0.10),
+                      names_to = "Alpha", values_to = "Esperanza_rt")
+
+ggplot( graficable_largo, aes(x = tiempos, y = Esperanza_rt, color = factor(Alpha) )  ) +
+      geom_line(linewidth = 0.5, alpha = 1) + xlim(c(0,60)) +
+      geom_hline(yintercept = r_eq, linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.25) +
+      geom_vline(xintercept = 30, linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.25) +
+      geom_vline(xintercept = 15, linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.25) +
+      scale_color_manual(values = c("Esperanza_1.0" = "#9C0824", "Esperanza_0.90" = "#BD2629", 
+                                "Esperanza_0.80" = "#EB6F5B", "Esperanza_0.65" = "#FEBEB1",
+                                "Esperanza_0.50" = "#F3F8F2", "Esperanza_0.35" = "#7BB379",  
+                                "Esperanza_0.20" = "#33813F", "Esperanza_0.10" = "#09622A" ) ) +
+      labs(   title = "Esperanza de r_t variando alpha con r_e = 0.15", x = "Tiempo", y = "E[r_t]", color = "Alpha" ) +
+      dark_theme_gray() + theme(  plot.title = element_text(hjust = 0.5),
+                                legend.position = "right"  )  
+```
+
+Observese que cuando ha transcurrido mas de 1 mes, solo cuando \(\alpha <= 0.1\), la esperanza se puede distinguir de \(r_e\) y cuando ha transcurrido mas de medio mes esto ocurre solo cuando \(\alpha <= 0.2\). Probemos para un valor mas grande de \(r_e\)
+
+```{r, fig.width=10, fig.height=6}
+r_eq <- 0.3
+
+graficable <- data.frame(tiempos, 
+                Esperanza_1.0 = esp(tiempos,datos[1],1,r_eq),         
+                Esperanza_0.90 = esp(tiempos,datos[1],0.90,r_eq),
+                Esperanza_0.80 = esp(tiempos,datos[1],0.80,r_eq),
+                Esperanza_0.65 = esp(tiempos,datos[1],0.65,r_eq),
+                Esperanza_0.50 = esp(tiempos,datos[1],0.50,r_eq),
+                Esperanza_0.35 = esp(tiempos,datos[1],0.35,r_eq),
+                Esperanza_0.20 = esp(tiempos,datos[1],0.20,r_eq),
+                Esperanza_0.10 = esp(tiempos,datos[1],0.10,r_eq) ) 
+
+graficable_largo <- graficable %>%
+  tidyr::pivot_longer(cols = c(Esperanza_1.0,Esperanza_0.90,Esperanza_0.80,Esperanza_0.65,
+                               Esperanza_0.50,Esperanza_0.35,Esperanza_0.20,Esperanza_0.10),
+                      names_to = "Alpha", values_to = "Esperanza_rt")
+
+ggplot( graficable_largo, aes(x = tiempos, y = Esperanza_rt, color = factor(Alpha) )  ) +
+      geom_line(linewidth = 0.5, alpha = 1) + xlim(c(0,60)) +
+      geom_hline(yintercept = r_eq, linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.25) +
+      geom_vline(xintercept = 30, linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.25) +
+      geom_vline(xintercept = 15, linetype = "dotdash", color = "#FFE1FF", size = 0.5, alpha=0.25) +
+      scale_color_manual(values = c("Esperanza_1.0" = "#9C0824", "Esperanza_0.90" = "#BD2629", 
+                                "Esperanza_0.80" = "#EB6F5B", "Esperanza_0.65" = "#FEBEB1",
+                                "Esperanza_0.50" = "#F3F8F2", "Esperanza_0.35" = "#7BB379",  
+                                "Esperanza_0.20" = "#33813F", "Esperanza_0.10" = "#09622A" ) ) +
+      labs(   title = "Esperanza de r_t variando alpha con r_e = 0.15", x = "Tiempo", y = "E[r_t]", color = "Alpha" ) +
+      dark_theme_gray() + theme(  plot.title = element_text(hjust = 0.5),
+                                legend.position = "right"  )  
+```
+
+\(r_e\) se ha duplicado pero aun asi, ocurre lo mismo. Esto exhibe un poco de la dinamica detras de la influencia del parametro \(\alpha\) que hace que sea dificil de estimar, almenos bastante mas que los otros dos.
+
